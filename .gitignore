@@ -1,0 +1,82 @@
+# Environment variables and credentials
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+token.json
+OAUTH_2_ACCESS_TOKEN
+TOKEN_EXPIRY
+
+# Runtime data
+logs/
+*.log
+main.log
+token_debug.log
+token_refresh.log
+*.log.*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+.python-version
+venv/
+env/
+ENV/
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Docker
+.docker/
+docker-compose.override.yml
+
+# Media and content
+local_test_data/
+uploads/
+downloads/
+media/
+temp/
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.mp4
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+.project
+.classpath
+.settings/
+*.sublime-workspace
+*.sublime-project
+
+# AWS
+.aws/
+.elasticbeanstalk/
+deployment-package.zip
