@@ -1,6 +1,6 @@
 import os
 import boto3
-from flask import Flask, request, redirect, flash, render_template_string, jsonify
+from flask import Blueprint, request, redirect, flash, render_template_string, jsonify
 import logging
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
@@ -24,11 +24,8 @@ if not logger.hasHandlers():
 # Load environment variables
 load_dotenv()
 
-app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET_KEY")
-if not app.secret_key:
-    logger.warning("FLASK_SECRET_KEY not set in .env. Using default (insecure for production).")
-    app.secret_key = "defaultsecretkey"
+# Create a Blueprint 
+app = Blueprint('upload_dashboard', __name__)
 
 # S3 configuration
 S3_BUCKET = os.getenv("S3_BUCKET_NAME", os.getenv("BUCKET_NAME"))
@@ -56,8 +53,8 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(TEMP_FOLDER, exist_ok=True)
 os.makedirs(LOCAL_TEST_DATA, exist_ok=True)
 
-app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
-app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB max upload size
+# Constants for use in the blueprint
+MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16 MB max upload size
 ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "txt"}
 
 def allowed_file(filename):

@@ -1,5 +1,5 @@
 import os
-from flask import Flask, render_template_string, jsonify, request
+from flask import Blueprint, render_template_string, jsonify, request
 import logging
 import json
 from datetime import datetime, timezone, timedelta
@@ -16,11 +16,8 @@ if not logger.hasHandlers():
 # Load environment variables
 load_dotenv()
 
-app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET_KEY")
-if not app.secret_key:
-    logger.warning("FLASK_SECRET_KEY not set in .env. Using default (insecure for production).")
-    app.secret_key = "defaultsecretkey"
+# Create a Blueprint instead of a Flask app
+app = Blueprint('dashboard', __name__)
 
 # Table names from environment or defaults
 TARGETED_USERS_TABLE = os.getenv("DYNAMODB_TARGETED_USERS_TABLE", "TargetedUsers")
@@ -30,7 +27,6 @@ KEYWORDS_TABLE = os.getenv("DYNAMODB_KEYWORDS_TABLE", "Keywords")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID", os.getenv("AWS_ACCESS_KEY"))
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-
 
 class DecimalEncoder(json.JSONEncoder):
     """Helper class to convert DynamoDB Decimal types to numbers for JSON"""

@@ -168,18 +168,37 @@ class AIFallbackGenerator:
         Args:
             image_path: Path to image (optional)
             summary: Content summary (optional)
-            
+        
         Returns:
             str: Generated tweet text
         """
-        # Generic templates
-        templates = [
-            "Check out our latest comic art! {summary} #kickstarter #comics #art",
-            "New artwork from our campaign! {summary} #comicart #kickstarter",
-            "Just released: new comic art for our Kickstarter! {summary} #funding #art",
-            "Don't miss this amazing comic art! {summary} #comics #crowdfunding",
-            "Support indie comic artists! {summary} #kickstarter #indiecomics"
+        # Check if summary contains a Kickstarter link
+        has_kickstarter_link = summary and ("kickstarter.com" in summary.lower() or "kck.st" in summary.lower())
+        has_comic_art = summary and "comic" in summary.lower()
+        
+        # Generic templates without specific mentions
+        general_templates = [
+            "Check out our latest artwork! {summary} #art #creative",
+            "New release! {summary} #artwork #creativity",
+            "Just unveiled: {summary} #art #imagination",
+            "Don't miss this amazing artwork! {summary} #visualart",
+            "Support indie artists! {summary} #art #creative"
         ]
+        
+        # Templates for when Kickstarter is explicitly mentioned
+        kickstarter_templates = [
+            "Support our Kickstarter! {summary} #kickstarter #funding",
+            "Back our campaign! {summary} #kickstarter #crowdfunding",
+            "Help make this happen! {summary} #kickstarter #support",
+            "Fund our project! {summary} #kickstarter #backers",
+            "Join our Kickstarter campaign! {summary} #crowdfunding"
+        ]
+        
+        # Choose appropriate template set
+        if has_kickstarter_link:
+            templates = kickstarter_templates
+        else:
+            templates = general_templates
         
         # Select a random template
         template = random.choice(templates)
@@ -190,12 +209,12 @@ class AIFallbackGenerator:
                 filename = os.path.basename(image_path)
                 summary = f"This amazing {filename.split('.')[0]} design"
             else:
-                summary = "Amazing comic art for your collection"
+                summary = "Amazing artwork for your collection"
         
         # Ensure summary isn't too long
         if summary and len(summary) > 100:
             summary = summary[:97] + "..."
-            
+        
         # Fill the template
         tweet = template.format(summary=summary)
         
@@ -501,87 +520,100 @@ class OpenAIIntegration:
     ) -> str:
         """
         Generate tweet text based on an image and summary.
-        
+
         Args:
             image_path: Path to the image file (optional)
             summary: Text summary of the content (optional)
             max_length: Maximum length of the tweet
             use_cache: Whether to use cached responses
-            
+
         Returns:
             str: Generated tweet text
         """
         logger.info(f"Generating tweet text with image_path={image_path is not None}, summary_length={len(summary) if summary else 0}")
-        
+
         # Check cache if enabled
         if use_cache:
             cached = self._get_cached_response('tweet', image_path=image_path, summary=summary)
             if cached:
                 logger.info(f"Using cached tweet text ({len(cached)} chars)")
                 return self.truncate_to_char_limit(cached, max_length)
-        
+
         try:
             # Clean up optional parameters
             if summary is None:
                 summary = ""
-            
+
             image_description = ""
             if image_path:
                 # Get image filename for description
                 image_description = f"Image file: {os.path.basename(image_path)}"
-            
-            # Create a prompt for OpenAI
+
+            # Check if summary contains a Kickstarter link
+            has_kickstarter_link = "kickstarter.com" in summary.lower() or "kck.st" in summary.lower()
+
+            # Create a prompt for OpenAI that addresses client's concerns
             prompt = (
-                "Generate an engaging tweet caption for a Kickstarter campaign focused on comic book art. "
+                "Generate an engaging tweet caption for the following artwork. "
                 f"Image Description: {image_description}\n"
-                f"Summary: {summary}\n"
+                f"Summary: {summary}\n\n"
                 f"The tweet must be concise, creative, under {max_length} characters, and include a call-to-action. "
-                f"Avoid placeholder text like [brackets] or {{curly braces}}."
+                f"Avoid placeholder text like [brackets] or {{curly braces}}.\n\n"
+                "IMPORTANT GUIDELINES:\n"
+                "1. DO NOT mention 'comic book art' unless specifically mentioned in the summary.\n"
             )
-            
+
+            # Add Kickstarter guidance based on whether a link is present
+            if has_kickstarter_link:
+                prompt += "2. You MAY mention Kickstarter since there is a link to a campaign in the summary.\n"
+            else:
+                prompt += "2. DO NOT mention Kickstarter or any crowdfunding campaign as there is no actual link in the summary.\n"
+
+            prompt += "3. Focus on the artwork's style, content, and emotional impact rather than medium or platform.\n"
+
             logger.debug(f"Tweet prompt: {prompt[:100]}...")
-            
+
             # Track retry attempts
             for attempt in range(MAX_RETRIES):
                 try:
                     with cache_lock:
                         api_stats['calls'] += 1
-                    
+
                     start_time = time.time()
                     response = self.client.chat.completions.create(
                         model=self.default_model,
                         messages=[
-                            {"role": "system", "content": "You are a social media expert for Kickstarter campaigns specializing in comic book art."},
+                            {"role": "system", "content": "You are a social media expert for creative artwork promotion."},
                             {"role": "user", "content": prompt}
                         ],
                         temperature=0.7,
                         max_tokens=60
                     )
                     elapsed = time.time() - start_time
-                    
+
                     tweet_text = response.choices[0].message.content.strip()
-                    
+
                     # Validate the response
                     valid, reason = AIResponseValidator.validate_tweet_text(tweet_text, max_length)
                     if not valid:
                         logger.warning(f"Generated invalid tweet text: {reason}. Retrying...")
                         continue
-                    
+
                     # Update stats
                     with cache_lock:
                         api_stats['successes'] += 1
-                    
+
                     # Cache the response
                     if use_cache:
                         self._cache_response('tweet', tweet_text, image_path=image_path, summary=summary)
-                    
+
                     logger.info(f"Generated tweet text ({len(tweet_text)} chars) in {elapsed:.2f}s: {tweet_text[:30]}...")
                     return self.truncate_to_char_limit(tweet_text, max_length)
-                    
+
                 except openai.RateLimitError as e:
                     with cache_lock:
                         api_stats['failures'] += 1
-                    
+
                     if attempt < MAX_RETRIES - 1:
                         wait_time = RETRY_DELAY * (2 ** attempt)  # Exponential backoff
                         logger.warning(f"Rate limit hit, retrying in {wait_time} seconds: {str(e)}")
@@ -592,7 +624,7 @@ class OpenAIIntegration:
                 except openai.APIError as e:
                     with cache_lock:
                         api_stats['failures'] += 1
-                    
+
                     if attempt < MAX_RETRIES - 1:
                         wait_time = RETRY_DELAY * (2 ** attempt)  # Exponential backoff
                         logger.warning(f"API error, retrying in {wait_time} seconds: {str(e)}")
@@ -603,24 +635,24 @@ class OpenAIIntegration:
                 except Exception as e:
                     with cache_lock:
                         api_stats['failures'] += 1
-                    
+
                     logger.error(f"Unexpected error generating tweet text: {str(e)}")
                     break
-            
+
             # If we get here, all retries failed or an unexpected error occurred
             logger.warning("Using fallback tweet text generator")
             with cache_lock:
                 api_stats['fallbacks_used'] += 1
-            
+
             fallback_tweet = AIFallbackGenerator.generate_tweet_text(image_path, summary)
             return self.truncate_to_char_limit(fallback_tweet, max_length)
-                
+
         except Exception as e:
             logger.error(f"Error generating tweet text: {str(e)}")
-            
+
             with cache_lock:
                 api_stats['fallbacks_used'] += 1
-            
+
             # Fallback to using the summary directly
             fallback = AIFallbackGenerator.generate_tweet_text(image_path, summary)
             return self.truncate_to_char_limit(fallback, max_length)

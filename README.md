@@ -46,87 +46,104 @@ The **Twitter API Bot** is a fully automated social media solution designed to h
 
 ## Project Structure
 
-├── AWS_Deployment_Guide.md
 ├── Dockerfile
 ├── LICENSE
+├── Procfile
 ├── README.md
+├── admin-portal
+│   └── index.html
+├── app.py
 ├── dashboard_images
-│ ├── dashboard_1.png
-│ ├── dashboard_2.png
-│ ├── upload_dashboard_1.png
-│ ├── upload_dashboard_2.png
-│ └── upload_dashboard_3.png
+│   ├── bot_status.png
+│   ├── dashboard_1.png
+│   ├── dashboard_2.png
+│   ├── twitter_bot_command_center.png
+│   ├── upload_dashboard_1.png
+│   ├── upload_dashboard_2.png
+│   └── upload_dashboard_3.png
+├── deploy.sh
+├── deployment-package.zip
 ├── dm_context.txt
 ├── docker-entrypoint.sh
 ├── downloads
-│ ├── image1.jpg
-│ ├── image1.txt
-│ └── posting_history.json
+│   ├── image1.jpg
+│   ├── image1.txt
+│   └── posting_history.json
 ├── local_test_data
-│ ├── folder1
-│ │ ├── image1.jpg
-│ │ └── image1.txt
-│ ├── folder2
-│ │ ├── image2.jpg
-│ │ └── image2.txt
-│ ├── folder3
-│ │ ├── image3.jpg
-│ │ └── image3.txt
-│ ├── folder4
-│ │ ├── image4.jpg
-│ │ └── image4.txt
-│ ├── folder5
-│ │ ├── image5.jpg
-│ │ └── image5.txt
-│ ├── folder6
-│ │ ├── image6.jpg
-│ │ └── image6.txt
-│ ├── folder7
-│ │ ├── image7.png
-│ │ └── image7.txt
-│ ├── folder8
-│ │ ├── test_upload.png
-│ │ └── test_upload.txt
-│ └── folder9
-│ ├── test_upload.png
-│ └── test_upload.txt
+│   ├── folder1
+│   │   ├── image1.jpg
+│   │   └── image1.txt
+│   ├── folder2
+│   │   ├── image2.jpg
+│   │   └── image2.txt
+│   ├── folder3
+│   │   ├── image3.jpg
+│   │   └── image3.txt
+│   ├── folder4
+│   │   ├── image4.jpg
+│   │   └── image4.txt
+│   ├── folder5
+│   │   ├── image5.jpg
+│   │   └── image5.txt
+│   ├── folder6
+│   │   ├── image6.jpg
+│   │   └── image6.txt
+│   ├── folder7
+│   │   ├── image7.png
+│   │   └── image7.txt
+│   ├── folder8
+│   │   ├── test_upload.png
+│   │   └── test_upload.txt
+│   └── folder9
+│       ├── test_upload.png
+│       └── test_upload.txt
 ├── main.logOAUTH_2_ACCESS_TOKEN=NTd2VUx6bkd1b19GNDBHandLRWkxNU56MGlZekk1Q0JHUHBiLVhsSXk0Z2hUOjE3NDA0ODc2MjY4NDU6MTowOmF0OjE
 ├── requirements.txt
 ├── src
-│ ├── **init**.py
-│ ├── **pycache**
-│ │ ├── **init**.cpython-313.pyc
-│ │ ├── ai_integration.cpython-313.pyc
-│ │ ├── content_manager.cpython-313.pyc
-│ │ ├── dashboard.cpython-313.pyc
-│ │ ├── dynamodb_integration.cpython-313.pyc
-│ │ ├── main.cpython-313.pyc
-│ │ ├── regenerate_oauth2_token.cpython-313.pyc
-│ │ ├── twitter_api_interactions.cpython-313.pyc
-│ │ ├── twitter_bot.cpython-313.pyc
-│ │ ├── upload_dashboard.cpython-313.pyc
-│ │ └── upload_to_s3.cpython-313.pyc
-│ ├── ai_integration.py
-│ ├── content_manager.py
-│ ├── dashboard.py
-│ ├── dynamodb_integration.py
-│ ├── main.py
-│ ├── regenerate_oauth2_token.py
-│ ├── twitter_api_interactions.py
-│ ├── twitter_bot.py
-│ ├── upload_dashboard.py
-│ └── upload_to_s3.py
+│   ├── __init__.py
+│   ├── __pycache__
+│   │   ├── __init__.cpython-313.pyc
+│   │   ├── ai_integration.cpython-313.pyc
+│   │   ├── content_manager.cpython-313.pyc
+│   │   ├── dashboard.cpython-313.pyc
+│   │   ├── dynamodb_integration.cpython-313.pyc
+│   │   ├── main.cpython-313.pyc
+│   │   ├── regenerate_oauth2_token.cpython-313.pyc
+│   │   ├── twitter_api_interactions.cpython-313.pyc
+│   │   ├── twitter_bot.cpython-313.pyc
+│   │   ├── upload_dashboard.cpython-313.pyc
+│   │   └── upload_to_s3.cpython-313.pyc
+│   ├── ai_integration.py
+│   ├── content_manager.py
+│   ├── dashboard.py
+│   ├── dynamodb_integration.py
+│   ├── main.py
+│   ├── regenerate_oauth2_token.py
+│   ├── twitter_api_interactions.py
+│   ├── twitter_bot.py
+│   ├── upload_dashboard.py
+│   └── upload_to_s3.py
 ├── test_token_direct.py
 ├── token_debug.log
 ├── token_refresh.log
 └── uploads
-└── temp
-├── test1.jpg
-└── test1.txt
+    └── temp
+        ├── test1.jpg
+        └── test1.txt
+
+18 directories, 67 files
 
 ## Screenshots
 
 Below are some screenshots of the dashboard and content manager in action:
+
+### Twitter Bot Command Center
+
+![Twitter Bot Command Center](dashboard_images/twitter_bot_command_center.png)
+
+### Bot Status
+
+![Bot Status](dashboard_images/bot_status.png)
 
 ### Dashboard (Main View)
 
@@ -147,6 +164,7 @@ Below are some screenshots of the dashboard and content manager in action:
 ### Content Manager (S3 Content)
 
 ![Upload Dashboard 3](dashboard_images/upload_dashboard_3.png)
+
 
 ## Installation
 

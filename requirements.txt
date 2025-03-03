@@ -21,6 +21,7 @@ filetype==1.2.0
 # Web framework for OAuth flow and admin interface
 Flask==2.3.3
 Werkzeug==2.3.7
+Jinja2>=3.0.0
 
 # Testing framework
 pytest==8.3.4
@@ -40,3 +41,12 @@ cachetools==5.3.2   # For caching responses
 
 # Security
 cryptography==41.0.7  # Required for HTTPS with Flask
+
+# Required for Heroku
+itsdangerous>=2.0.0
+click>=8.0.0
+
+# Date/time handling
+python-dateutil>=2.8.2   # Extended datetime functionality
+pytz>=2023.3             # Timezone support
+tzlocal>=5.0.1           # Local timezone information

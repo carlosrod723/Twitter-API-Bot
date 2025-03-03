@@ -52,18 +52,6 @@ wheels/
 .docker/
 docker-compose.override.yml
 
-# Media and content
-local_test_data/
-uploads/
-downloads/
-media/
-temp/
-*.jpg
-*.jpeg
-*.png
-*.gif
-*.mp4
-
 # IDE specific files
 .idea/
 .vscode/
@@ -80,3 +68,7 @@ temp/
 .aws/
 .elasticbeanstalk/
 deployment-package.zip
+# Elastic Beanstalk Files
+.elasticbeanstalk/*
+!.elasticbeanstalk/*.cfg.yml
+!.elasticbeanstalk/*.global.yml
