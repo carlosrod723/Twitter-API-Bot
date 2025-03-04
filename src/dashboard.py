@@ -901,10 +901,15 @@ DASHBOARD_TEMPLATE = """
 
     <div class="container mb-5 pb-5">
       <div class="d-flex justify-content-between align-items-center mb-4">
-        <h1 class="stats-header">
-          <i class="fas fa-chart-line me-2"></i>
-          Activity Dashboard
-        </h1>
+        <div class="d-flex align-items-center">
+          <a href="/" class="btn btn-primary me-3">
+            <i class="fas fa-home me-2"></i> Return to Admin Portal
+          </a>
+          <h1 class="stats-header mb-0">
+            <i class="fas fa-chart-line me-2"></i>
+            Activity Dashboard
+          </h1>
+        </div>
         <div>
           <p class="text-muted">
             <span id="last-updated">Last updated: {{ timestamp }}</span>

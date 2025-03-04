@@ -139,11 +139,17 @@ Below are some screenshots of the dashboard and content manager in action:
 
 ### Twitter Bot Command Center
 
-![Twitter Bot Command Center](dashboard_images/twitter_bot_command_center.png)
+![Twitter Bot Command Center](dashboard_images/command_center_1.png)
+
+![Twitter Bot Command Center](dashboard_images/command_center_2.png)
 
 ### Bot Status
 
 ![Bot Status](dashboard_images/bot_status.png)
+
+### Activity Logs
+
+![Activity Logs](dashboard_images/activity_logs.png)
 
 ### Dashboard (Main View)
 

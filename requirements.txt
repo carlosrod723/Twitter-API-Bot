@@ -50,3 +50,6 @@ click>=8.0.0
 python-dateutil>=2.8.2   # Extended datetime functionality
 pytz>=2023.3             # Timezone support
 tzlocal>=5.0.1           # Local timezone information
+
+# For real time updates
+flask-socketio>=5.3.5

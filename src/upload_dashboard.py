@@ -315,7 +315,12 @@ HTML_TEMPLATE = """
     </nav>
     
     <div class="container">
-      <h1 class="mb-4" style="color: #37474F;">Comic Art Content Manager</h1>
+      <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1 style="color: #37474F;">Comic Art Content Manager</h1>
+        <a href="/" class="btn btn-primary">
+          <i class="fas fa-home me-2"></i> Return to Admin Portal
+        </a>
+      </div>
       
       {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}
