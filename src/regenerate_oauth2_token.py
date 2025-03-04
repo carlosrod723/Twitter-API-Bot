@@ -1,6 +1,6 @@
-#!/usr/bin/env python3
+# src/regenerate_oauth2_token.py
 """
-regenerate_oauth2_token.py - Generate OAuth 2.0 token using OAuth 1.0a credentials
+regenerate_oauth2_token.py - Generate OAuth 2.0 token using OAuth 1.0a credentials and update Heroku Config Vars
 """
 
 import os
@@ -30,6 +30,56 @@ console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s
 console_handler.setFormatter(console_formatter)
 logging.getLogger().addHandler(console_handler)
 
+# Function to update Heroku Config Vars
+def update_heroku_config(updates):
+    """Update Heroku Config Vars using Heroku Platform API"""
+    try:
+        # Get Heroku API key and app name from environment
+        heroku_api_key = os.getenv('HEROKU_API_KEY')
+        heroku_app_name = os.getenv('HEROKU_APP_NAME')
+        
+        if not heroku_api_key or not heroku_app_name:
+            logging.warning("Missing HEROKU_API_KEY or HEROKU_APP_NAME, skipping Heroku config update")
+            return False
+        
+        logging.info(f"Updating Heroku Config Vars for app: {heroku_app_name}")
+        
+        # Set up API request
+        headers = {
+            'Accept': 'application/vnd.heroku+json; version=3',
+            'Authorization': f'Bearer {heroku_api_key}',
+            'Content-Type': 'application/json'
+        }
+        
+        url = f'https://api.heroku.com/apps/{heroku_app_name}/config-vars'
+        
+        # Get current config vars first
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code != 200:
+            logging.error(f"Failed to get current Heroku config: {response.status_code} - {response.text}")
+            return False
+        
+        current_config = response.json()
+        
+        # Only update the needed variables, keep the rest
+        updated_config = {**current_config, **updates}
+        
+        # Update config vars
+        response = requests.patch(url, headers=headers, json=updates)
+        
+        if response.status_code == 200:
+            logging.info("Successfully updated Heroku Config Vars")
+            return True
+        else:
+            logging.error(f"Failed to update Heroku config: {response.status_code} - {response.text}")
+            return False
+            
+    except Exception as e:
+        logging.error(f"Error updating Heroku Config Vars: {e}")
+        return False
+
+# Update .env file for local development
 def update_env_file(updates, file_path='.env'):
     """Update the .env file with new values without adding quotation marks"""
     try:
@@ -276,26 +326,37 @@ def main():
     expiry_time = time.time() + (7 * 24 * 60 * 60)
     expiry_datetime = datetime.fromtimestamp(expiry_time).strftime('%Y-%m-%d %H:%M:%S')
     
-    # Update .env file
+    # Prepare token updates
     updates = {
         'OAUTH_2_ACCESS_TOKEN': bearer_token,
         'TWITTER_BEARER_TOKEN': bearer_token,
         'TWITTER_TOKEN_EXPIRY': str(expiry_time)
     }
     
-    success = update_env_file(updates)
+    # Update local .env file for development
+    env_success = update_env_file(updates)
     
-    if success:
-        total_time = time.time() - start_time
-        logging.info(f"Successfully updated tokens in .env file (took {total_time:.2f} seconds)")
-        logging.info(f"Token set to expire on: {expiry_datetime}")
-        print("Successfully updated OAuth 2.0 tokens in .env file")
-        print(f"Token expires on: {expiry_datetime}")
-        return True
+    # Update Heroku Config Vars if running on Heroku
+    heroku_success = update_heroku_config(updates)
+    
+    total_time = time.time() - start_time
+    logging.info(f"Token refresh process completed in {total_time:.2f} seconds")
+    logging.info(f"Token set to expire on: {expiry_datetime}")
+    
+    if env_success:
+        print("Successfully updated local .env file")
     else:
-        logging.error("Failed to update .env file")
-        print("Failed to update .env file. Check token_refresh.log for details.")
-        return False
+        print("Note: Local .env file update failed or skipped")
+        
+    if heroku_success:
+        print("Successfully updated Heroku Config Vars")
+    else:
+        print("Note: Heroku Config Vars update failed or skipped")
+        
+    print(f"Token expires on: {expiry_datetime}")
+    
+    # Return True if either update method succeeded
+    return env_success or heroku_success
 
 if __name__ == "__main__":
     success = main()
