@@ -22,6 +22,12 @@ app.register_blueprint(dashboard_blueprint, url_prefix='/dashboard')
 app.register_blueprint(upload_blueprint, url_prefix='/upload')
 app.register_blueprint(log_viewer_blueprint, url_prefix='/logs')
 
+# Upload files route
+@app.route("/upload-files", methods=["POST"])
+def forward_upload():
+    """Forward requests to the correct upload endpoint"""
+    return redirect(url_for('upload_dashboard.upload_files'), code=307) 
+
 # Bot thread
 bot_thread = None
 bot_running = False  # Track if the bot is running

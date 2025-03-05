@@ -681,7 +681,7 @@ HTML_TEMPLATE = """
         uploadButton.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Uploading...';
         
         // Send Ajax request
-        fetch('/upload-files', {
+        fetch('/upload/upload-files', {
           method: 'POST',
           body: formData
         })
