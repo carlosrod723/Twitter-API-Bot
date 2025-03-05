@@ -31,6 +31,21 @@ def forward_upload():
 def forward_delete():
     """Forward folder deletion requests to the correct endpoint"""
     return redirect(url_for('upload_dashboard.delete_folder_route'), code=307)
+    
+@app.route("/rename-folder", methods=["POST"])
+def forward_rename():
+    """Forward folder rename requests to the correct endpoint"""
+    return redirect(url_for('upload_dashboard.rename_folder_route'), code=307)
+    
+@app.route("/download-folder")
+def forward_download():
+    """Forward folder download requests to the correct endpoint"""
+    return redirect(url_for('upload_dashboard.download_folder_route'))
+    
+@app.route("/batch-delete", methods=["POST"])
+def forward_batch_delete():
+    """Forward batch deletion requests to the correct endpoint"""
+    return redirect(url_for('upload_dashboard.batch_delete_route'), code=307)
 
 # Enhanced error handling for S3 operations
 @app.errorhandler(500)
