@@ -1,6 +1,6 @@
 import os
 import boto3
-from flask import Blueprint, request, redirect, flash, render_template_string, jsonify
+from flask import Blueprint, request, redirect, flash, render_template_string, jsonify, send_file
 import logging
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
@@ -11,6 +11,13 @@ import re
 import traceback
 import json
 from urllib.parse import quote
+import tempfile
+from src.upload_to_s3 import (
+    upload_folder_to_s3,
+    rename_folder_in_s3,
+    create_download_archive,
+    delete_folder_from_s3
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -492,6 +499,9 @@ HTML_TEMPLATE = """
                               <i class="fas fa-ellipsis-v"></i>
                             </button>
                             <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="dropdownMenuButton{{loop.index}}">
+                              <li><a class="dropdown-item rename-folder" href="#" data-folder="{{ item.folder }}"><i class="fas fa-edit me-2"></i>Rename</a></li>
+                              <li><a class="dropdown-item download-folder" href="#" data-folder="{{ item.folder }}"><i class="fas fa-download me-2"></i>Download as ZIP</a></li>
+                              <li><hr class="dropdown-divider"></li>
                               <li><a class="dropdown-item text-danger delete-folder" href="#" data-folder="{{ item.folder }}" data-location="s3"><i class="fas fa-trash-alt me-2"></i>Delete</a></li>
                             </ul>
                           </div>
@@ -569,6 +579,50 @@ HTML_TEMPLATE = """
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
             <button type="button" class="btn btn-danger" id="confirmDeleteBtn">Delete</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Rename Folder Modal -->
+    <div class="modal fade" id="renameFolderModal" tabindex="-1" aria-labelledby="renameFolderModalLabel" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header" style="background-color: #40C4FF; color: white;">
+            <h5 class="modal-title" id="renameFolderModalLabel">
+              <i class="fas fa-edit me-2"></i>
+              Rename Folder
+            </h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <p>Rename folder <strong id="currentFolderName"></strong>:</p>
+            <div class="mb-3">
+              <label for="newFolderName" class="form-label">New folder name:</label>
+              <input type="text" class="form-control" id="newFolderName" required>
+              <div class="invalid-feedback">
+                Please enter a valid folder name (letters, numbers, underscores, and hyphens only).
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-primary" id="confirmRenameBtn">Rename</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Loading Modal -->
+    <div class="modal fade" id="loadingModal" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1" aria-labelledby="loadingModalLabel" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-body text-center p-4">
+            <div class="spinner-border text-primary mb-3" role="status" style="width: 3rem; height: 3rem;">
+              <span class="visually-hidden">Loading...</span>
+            </div>
+            <h5 id="loadingModalLabel" class="mt-3">Processing your request...</h5>
+            <p id="loadingModalMessage" class="text-muted">This may take a few moments.</p>
           </div>
         </div>
       </div>
@@ -900,6 +954,175 @@ HTML_TEMPLATE = """
           confirmDeleteBtn.disabled = false;
           confirmDeleteBtn.innerHTML = 'Delete';
         });
+
+        // Show loading overlay
+        function showLoading(message = "Processing your request...") {
+          document.getElementById('loadingModalMessage').textContent = message;
+          new bootstrap.Modal(document.getElementById('loadingModal')).show();
+        }
+
+        // Hide loading overlay
+        function hideLoading() {
+          const loadingModalEl = document.getElementById('loadingModal');
+          const loadingModal = bootstrap.Modal.getInstance(loadingModalEl);
+          if (loadingModal) {
+            loadingModal.hide();
+          }
+        }
+
+        // Rename and download functionality
+        document.addEventListener('DOMContentLoaded', function() {
+          // Setup rename handlers
+          const renameButtons = document.querySelectorAll('.rename-folder');
+          const renameModal = new bootstrap.Modal(document.getElementById('renameFolderModal'));
+          
+          renameButtons.forEach(button => {
+            button.addEventListener('click', function(e) {
+              e.preventDefault();
+              
+              // Get folder name from data attribute
+              const folderToRename = this.getAttribute('data-folder');
+              
+              // Update the modal text
+              document.getElementById('currentFolderName').textContent = folderToRename;
+              document.getElementById('newFolderName').value = folderToRename;
+              
+              // Show the rename modal
+              renameModal.show();
+              
+              // Setup confirm button
+              document.getElementById('confirmRenameBtn').onclick = function() {
+                renameFolder(folderToRename, document.getElementById('newFolderName').value.trim());
+              };
+            });
+          });
+          
+          // Setup download handlers
+          const downloadButtons = document.querySelectorAll('.download-folder');
+          
+          downloadButtons.forEach(button => {
+            button.addEventListener('click', function(e) {
+              e.preventDefault();
+              
+              // Get folder name from data attribute
+              const folderToDownload = this.getAttribute('data-folder');
+              
+              // Start download
+              downloadFolder(folderToDownload);
+            });
+          });
+        });
+
+        // Function to rename a folder
+        function renameFolder(oldName, newName) {
+          // Basic validation
+          if (!newName) {
+            document.getElementById('newFolderName').classList.add('is-invalid');
+            return;
+          }
+          
+          // Validate folder name (letters, numbers, underscores, hyphens)
+          if (!/^[a-zA-Z0-9_-]+$/.test(newName)) {
+            document.getElementById('newFolderName').classList.add('is-invalid');
+            return;
+          }
+          
+          // Hide modal and show loading
+          const renameModalEl = document.getElementById('renameFolderModal');
+          const renameModal = bootstrap.Modal.getInstance(renameModalEl);
+          renameModal.hide();
+          
+          showLoading("Renaming folder...");
+          
+          // Send rename request
+          fetch('/upload/rename-folder', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              old_name: oldName,
+              new_name: newName
+            })
+          })
+          .then(response => response.json())
+          .then(data => {
+            hideLoading();
+            
+            // Show result message
+            const alertType = data.success ? 'success' : 'danger';
+            const alertIcon = data.success ? 'check-circle' : 'exclamation-circle';
+            
+            const alertDiv = document.createElement('div');
+            alertDiv.className = `alert alert-${alertType} alert-dismissible fade show`;
+            alertDiv.innerHTML = `
+              <i class="fas fa-${alertIcon} me-2"></i>
+              ${data.message}
+              <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            `;
+            
+            // Insert the alert at the top of the page
+            const container = document.querySelector('.container');
+            container.insertBefore(alertDiv, container.firstChild);
+            
+            // Refresh the page after a brief delay if successful
+            if (data.success) {
+              setTimeout(() => {
+                window.location.reload();
+              }, 1500);
+            }
+          })
+          .catch(error => {
+            hideLoading();
+            console.error('Error renaming folder:', error);
+            
+            // Show error message
+            const alertDiv = document.createElement('div');
+            alertDiv.className = 'alert alert-danger alert-dismissible fade show';
+            alertDiv.innerHTML = `
+              <i class="fas fa-exclamation-circle me-2"></i>
+              An error occurred while renaming the folder. Please try again.
+              <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            `;
+            
+            // Insert the alert
+            const container = document.querySelector('.container');
+            container.insertBefore(alertDiv, container.firstChild);
+          });
+        }
+
+        // Function to download a folder
+        function downloadFolder(folderName) {
+          showLoading(`Preparing ${folderName} for download...`);
+          
+          // Create a link element to trigger the download
+          const downloadLink = document.createElement('a');
+          downloadLink.href = `/upload/download-folder?folder=${encodeURIComponent(folderName)}`;
+          downloadLink.setAttribute('download', `${folderName}.zip`);
+          
+          // Append to body, click, and remove
+          document.body.appendChild(downloadLink);
+          downloadLink.click();
+          document.body.removeChild(downloadLink);
+          
+          // Hide loading after a reasonable delay
+          setTimeout(() => {
+            hideLoading();
+            
+            // Show success message
+            const alertDiv = document.createElement('div');
+            alertDiv.className = 'alert alert-success alert-dismissible fade show';
+            alertDiv.innerHTML = `
+              <i class="fas fa-check-circle me-2"></i>
+              Download started for folder "${folderName}".
+              <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            `;
+            
+            // Insert the alert
+            const container = document.querySelector('.container');
+            container.insertBefore(alertDiv, container.firstChild);
+          }, 1500);
+        }
       });
     </script>
   </body>
@@ -1105,6 +1328,105 @@ def upload_folder_to_s3_route():
         flash(f"Error uploading to S3: {str(e)}", "danger")
     
     return redirect("/")
+
+@app.route("/rename-folder", methods=["POST"])
+def rename_folder_route():
+    """Rename a folder in S3."""
+    if not request.is_json:
+        logger.error("Invalid request format for folder rename - expected JSON")
+        return jsonify({"success": False, "message": "Invalid request format"}), 400
+    
+    data = request.get_json()
+    old_name = data.get("old_name")
+    new_name = data.get("new_name")
+    
+    if not old_name or not new_name:
+        logger.error("Missing required parameters for rename: old_name or new_name")
+        return jsonify({"success": False, "message": "Missing required parameters"}), 400
+    
+    # Validate new folder name (letters, numbers, underscores, hyphens)
+    if not re.match(r'^[a-zA-Z0-9_-]+$', new_name):
+        logger.error(f"Invalid folder name for rename: {new_name}")
+        return jsonify({"success": False, "message": "Invalid folder name. Use only letters, numbers, underscores, and hyphens."})
+    
+    if not has_s3_config:
+        logger.error("S3 is not configured, cannot rename folder")
+        return jsonify({"success": False, "message": "S3 storage is not configured"}), 400
+    
+    try:
+        # Import the rename function
+        from src.upload_to_s3 import rename_folder_in_s3
+        
+        logger.info(f"Renaming folder {old_name} to {new_name} in S3 bucket {S3_BUCKET}")
+        success, renamed_count, error_message = rename_folder_in_s3(s3_client, S3_BUCKET, old_name, new_name)
+        
+        if success:
+            logger.info(f"Successfully renamed folder {old_name} to {new_name} with {renamed_count} objects")
+            return jsonify({
+                "success": True,
+                "message": f"Renamed folder '{old_name}' to '{new_name}' with {renamed_count} objects"
+            })
+        else:
+            logger.error(f"Failed to rename folder {old_name} to {new_name}: {error_message}")
+            return jsonify({
+                "success": False,
+                "message": f"Failed to rename folder: {error_message}"
+            })
+    except Exception as e:
+        logger.error(f"Error renaming folder {old_name} to {new_name}: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({"success": False, "message": f"Error: {str(e)}"})
+
+@app.route("/download-folder")
+def download_folder_route():
+    """Download a folder from S3 as a ZIP archive."""
+    from flask import send_file
+    import tempfile
+    
+    folder = request.args.get("folder")
+    
+    if not folder:
+        logger.error("No folder specified for download")
+        flash("No folder specified for download.", "danger")
+        return redirect("/")
+    
+    if not has_s3_config:
+        logger.error("S3 is not configured, cannot download folder")
+        flash("S3 storage is not configured. Please check your .env file.", "danger")
+        return redirect("/")
+    
+    try:
+        # Import the download function
+        from src.upload_to_s3 import create_download_archive
+        
+        logger.info(f"Creating download archive for folder {folder} from S3 bucket {S3_BUCKET}")
+        
+        # Create a temporary file to store the ZIP archive
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as temp_file:
+            temp_path = temp_file.name
+        
+        # Create the ZIP archive
+        success, result, error_message = create_download_archive(s3_client, S3_BUCKET, folder, output_path=temp_path)
+        
+        if success:
+            logger.info(f"Successfully created ZIP archive for folder {folder} at {temp_path}")
+            
+            # Send the file
+            return send_file(
+                temp_path,
+                as_attachment=True,
+                download_name=f"{folder}.zip",
+                mimetype='application/zip'
+            )
+        else:
+            logger.error(f"Failed to create download archive for folder {folder}: {error_message}")
+            flash(f"Failed to create download archive: {error_message}", "danger")
+            return redirect("/")
+    except Exception as e:
+        logger.error(f"Error creating download archive for folder {folder}: {e}")
+        logger.error(traceback.format_exc())
+        flash(f"Error creating download archive: {str(e)}", "danger")
+        return redirect("/")
 
 if __name__ == "__main__":
     port = int(os.getenv("DASHBOARD_PORT", 5002))
