@@ -552,22 +552,26 @@ class OpenAIIntegration:
             # Check if summary contains a Kickstarter link
             has_kickstarter_link = "kickstarter.com" in summary.lower() or "kck.st" in summary.lower()
 
-            # Create a prompt for OpenAI that addresses client's concerns
+            # Create a prompt for OpenAI that generates natural-sounding tweets
             prompt = (
-                "Generate an engaging tweet caption for the following artwork. "
+                "Write a casual, engaging tweet about this artwork as if you're a real person sharing something cool. "
                 f"Image Description: {image_description}\n"
-                f"Summary: {summary}\n\n"
-                f"The tweet must be concise, creative, under {max_length} characters, and include a call-to-action. "
-                f"Avoid placeholder text like [brackets] or {{curly braces}}.\n\n"
+                f"Content Info: {summary}\n\n"
+                f"Keep it under {max_length} characters and make it sound natural and conversational - like something a real person would actually tweet. "
+                "Include a call-to-action only if it feels natural.\n\n"
                 "IMPORTANT GUIDELINES:\n"
-                "1. DO NOT mention 'comic book art' unless specifically mentioned in the summary.\n"
+                "- Sound like a real person, not a marketer\n"
+                "- Use casual language, contractions, and natural phrasing\n"
+                "- Focus on what's exciting about the art itself\n"
+                "- Avoid corporate or promotional-sounding language\n"
+                "- Use no more than one hashtag, and only if it flows naturally\n"
             )
 
             # Add Kickstarter guidance based on whether a link is present
             if has_kickstarter_link:
-                prompt += "2. You MAY mention Kickstarter since there is a link to a campaign in the summary.\n"
+                prompt += "- You can briefly mention backing the project on Kickstarter, but make it casual and authentic\n"
             else:
-                prompt += "2. DO NOT mention Kickstarter or any crowdfunding campaign as there is no actual link in the summary.\n"
+                prompt += "- Don't mention Kickstarter or crowdfunding campaigns\n"
 
             prompt += "3. Focus on the artwork's style, content, and emotional impact rather than medium or platform.\n"
 
@@ -583,10 +587,10 @@ class OpenAIIntegration:
                     response = self.client.chat.completions.create(
                         model=self.default_model,
                         messages=[
-                            {"role": "system", "content": "You are a social media expert for creative artwork promotion."},
+                            {"role": "system", "content": "You are a creative person sharing art you're excited about. You sound like a real human, not a marketing account."},
                             {"role": "user", "content": prompt}
                         ],
-                        temperature=0.7,
+                        temperature=0.8,
                         max_tokens=60
                     )
                     elapsed = time.time() - start_time
@@ -687,17 +691,22 @@ class OpenAIIntegration:
             if not isinstance(tweet_text, str):
                 logger.error("Invalid input: tweet_text must be a string")
                 return AIFallbackGenerator.generate_comment("")
-            
+
             # Create a prompt for OpenAI
             prompt = (
-                "Generate a friendly, engaging comment for this tweet:\n"
-                f"Tweet: {tweet_text}\n"
-                f"The comment should be supportive, under {max_length} characters, and subtly promote a Kickstarter campaign for comic book art. "
-                "Avoid generic responses or placeholder text."
+                "Write a genuine, conversational reply to this tweet as a fellow art enthusiast:\n"
+                f"Tweet: {tweet_text}\n\n"
+                "Your comment should:\n"
+                "- Be under 280 characters\n"
+                "- Show authentic appreciation for the content\n"
+                "- Sound like a real person, not a business\n"
+                "- Feel like an organic conversation, not marketing\n"
+                "- Avoid clichés and generic praise\n"
+                "\nIf it feels natural in context, you can briefly mention your own artistic project, but only if it directly relates to what they posted about."
             )
-            
+
             logger.debug(f"Comment prompt: {prompt[:100]}...")
-            
+
             # Track retry attempts
             for attempt in range(MAX_RETRIES):
                 try:
@@ -708,10 +717,10 @@ class OpenAIIntegration:
                     response = self.client.chat.completions.create(
                         model=self.default_model,
                         messages=[
-                            {"role": "system", "content": "You are a social media marketing expert for comic book art campaigns."},
+                            {"role": "system", "content": "You are an art enthusiast having natural conversations on social media. You're just a regular person, not a marketer."},
                             {"role": "user", "content": prompt}
                         ],
-                        temperature=0.7,
+                        temperature=0.8,
                         max_tokens=40
                     )
                     elapsed = time.time() - start_time
@@ -814,11 +823,17 @@ class OpenAIIntegration:
             
             # Create a prompt for OpenAI
             prompt = (
-                f"Generate a friendly, personalized direct message for a Twitter user named {username} who supports Kickstarter projects.\n"
-                f"Context: {context}\n"
-                f"The message should thank them, mention our comic book art campaign, and invite them to learn more. Keep it under {max_length} characters. "
-                "Avoid obviously templated or generic messages."
-            )
+             f"Write a friendly, personalized Twitter DM to @{username}.\n"
+             f"Context about our project: {context}\n\n"
+             "This message should:\n"
+             "- Sound like it's from one person to another, not from a company\n"
+             "- Be conversational and casual (use contractions, simple language)\n"
+             "- Mention our comic art project in a way that feels natural, not promotional\n"
+             "- Start with a genuine, personalized greeting\n"
+             "- Avoid sounding templated or mass-produced\n"
+             "- Keep it under 280 characters\n"
+             "\nMost importantly: write as if you're messaging a friend about something cool, not selling a product."
+          )
             
             logger.debug(f"DM prompt: {prompt[:100]}...")
             
@@ -832,10 +847,10 @@ class OpenAIIntegration:
                     response = self.client.chat.completions.create(
                         model=self.default_model,
                         messages=[
-                            {"role": "system", "content": "You are a friendly marketer for a comic book art Kickstarter campaign."},
+                            {"role": "system", "content": "You are a friendly artist reaching out to someone with similar interests. Your messages sound personal and conversational."},
                             {"role": "user", "content": prompt}
                         ],
-                        temperature=0.7,
+                        temperature=0.8,
                         max_tokens=50
                     )
                     elapsed = time.time() - start_time
