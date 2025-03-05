@@ -1,25 +1,16 @@
 import os
 import boto3
-from flask import Blueprint, request, redirect, flash, render_template_string, jsonify, send_file, url_for
+from flask import Blueprint, request, redirect, flash, render_template_string, jsonify
 import logging
-import traceback
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
-from src.upload_to_s3 import (
-    upload_folder_to_s3, 
-    upload_files_to_s3,
-    delete_folder_from_s3, 
-    rename_folder_in_s3, 
-    create_download_archive,
-    test_s3_connection
-)
+from src.upload_to_s3 import upload_folder_to_s3
 import uuid
 import shutil
 import re
+import traceback
 import json
-import io
-import tempfile
-from datetime import datetime
+from urllib.parse import quote
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -45,27 +36,25 @@ S3_REGION = os.getenv("AWS_REGION", os.getenv("BUCKET_REGION"))
 AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID", os.getenv("AWS_ACCESS_KEY"))
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 
-# Check S3 configuration
 if not all([S3_BUCKET, S3_REGION, AWS_ACCESS_KEY, AWS_SECRET_ACCESS_KEY]):
     logger.warning("Missing S3 configuration in .env file. Some features may not work.")
     has_s3_config = False
 else:
     has_s3_config = True
-    try:
-        s3_client = boto3.client(
-            "s3",
-            aws_access_key_id=AWS_ACCESS_KEY,
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-            region_name=S3_REGION
-        )
-        # Test the connection
-        test_result = test_s3_connection()
-        if not test_result:
-            logger.warning("S3 connection test failed. Check your credentials and bucket configuration.")
-            has_s3_config = False
-    except Exception as e:
-        logger.error(f"Failed to initialize S3 client: {e}")
-        has_s3_config = False
+    s3_client = boto3.client(
+        "s3",
+        aws_access_key_id=AWS_ACCESS_KEY,
+        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+        region_name=S3_REGION
+    )
+
+# Local folders configuration
+UPLOAD_FOLDER = "uploads"
+TEMP_FOLDER = os.path.join(UPLOAD_FOLDER, "temp")
+LOCAL_TEST_DATA = "local_test_data"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(TEMP_FOLDER, exist_ok=True)
+os.makedirs(LOCAL_TEST_DATA, exist_ok=True)
 
 # Constants for use in the blueprint
 MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16 MB max upload size
@@ -73,6 +62,28 @@ ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "txt"}
 
 def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def get_local_content():
+    """Get a list of all local content folders and files"""
+    content = []
+    try:
+        for folder_name in os.listdir(LOCAL_TEST_DATA):
+            folder_path = os.path.join(LOCAL_TEST_DATA, folder_name)
+            if os.path.isdir(folder_path):
+                files = os.listdir(folder_path)
+                image_files = [f for f in files if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+                text_files = [f for f in files if f.lower().endswith('.txt')]
+                
+                content.append({
+                    'folder': folder_name,
+                    'image_files': image_files,
+                    'text_files': text_files,
+                    'path': folder_path
+                })
+    except Exception as e:
+        logger.error(f"Error getting local content: {e}")
+    
+    return content
 
 def get_s3_content():
     """Get a list of all content stored in S3"""
@@ -82,66 +93,60 @@ def get_s3_content():
     
     try:
         # List all objects in the bucket
-        paginator = s3_client.get_paginator('list_objects_v2')
-        page_iterator = paginator.paginate(Bucket=S3_BUCKET)
+        response = s3_client.list_objects_v2(Bucket=S3_BUCKET)
         
-        folders = {}
-        
-        # Process all pages of objects
-        for page in page_iterator:
-            if 'Contents' in page:
-                for item in page['Contents']:
-                    key = item['Key']
-                    parts = key.split('/')
-                    
-                    # Skip empty keys or objects without folder structure
-                    if len(parts) <= 1:
-                        continue
-                    
+        if 'Contents' in response:
+            # Group by folder
+            folders = {}
+            for item in response['Contents']:
+                key = item['Key']
+                parts = key.split('/')
+                
+                if len(parts) > 1:
                     folder = parts[0]
                     filename = parts[-1]
-                    
-                    # Skip empty filenames (folder objects)
-                    if not filename:
-                        continue
-                    
-                    # Initialize folder entry if it doesn't exist
                     if folder not in folders:
                         folders[folder] = {
                             'image_files': [],
-                            'text_files': [],
-                            'last_modified': None
+                            'text_files': []
                         }
                     
-                    # Track the most recent modification date
-                    if not folders[folder]['last_modified'] or item['LastModified'] > folders[folder]['last_modified']:
-                        folders[folder]['last_modified'] = item['LastModified']
-                    
-                    # Categorize file by type
                     if filename.lower().endswith(('.jpg', '.jpeg', '.png')):
                         folders[folder]['image_files'].append(filename)
                     elif filename.lower().endswith('.txt'):
                         folders[folder]['text_files'].append(filename)
-        
-        # Convert to list format
-        for folder, files in folders.items():
-            content.append({
-                'folder': folder,
-                'image_files': files['image_files'],
-                'text_files': files['text_files'],
-                's3_path': f"s3://{S3_BUCKET}/{folder}/",
-                'last_modified': files['last_modified'],
-                'timestamp': files['last_modified'].timestamp() if files['last_modified'] else 0
-            })
-        
-        # Apply default sorting (newest first)
-        content.sort(key=lambda x: x['timestamp'], reverse=True)
-        
+            
+            # Convert to list format
+            for folder, files in folders.items():
+                content.append({
+                    'folder': folder,
+                    'image_files': files['image_files'],
+                    'text_files': files['text_files'],
+                    's3_path': f"s3://{S3_BUCKET}/{folder}/"
+                })
     except Exception as e:
         logger.error(f"Error getting S3 content: {e}")
-        logger.error(traceback.format_exc())
     
     return content
+
+def create_next_folder_name():
+    """Create the next available folder name based on existing folders"""
+    try:
+        folders = os.listdir(LOCAL_TEST_DATA)
+        # Filter for folders named like "folder1", "folder2", etc.
+        pattern = re.compile(r"folder(\d+)")
+        existing_numbers = [int(pattern.match(f).group(1)) for f in folders if pattern.match(f)]
+        
+        if not existing_numbers:
+            next_number = 1
+        else:
+            next_number = max(existing_numbers) + 1
+        
+        return f"folder{next_number}"
+    except Exception as e:
+        logger.error(f"Error creating next folder name: {e}")
+        # Fallback to timestamp-based name
+        return f"folder_{uuid.uuid4().hex[:8]}"
 
 HTML_TEMPLATE = """
 <!doctype html>
@@ -304,15 +309,11 @@ HTML_TEMPLATE = """
         right: 0;
         left: auto;
       }
-      .modal-header.danger {
+      .delete-confirmation-modal .modal-header {
         background-color: #dc3545;
         color: white;
       }
-      .modal-header.primary {
-        background-color: #40C4FF;
-        color: white;
-      }
-      .btn-danger {
+      .delete-confirmation-modal .btn-danger {
         background-color: #dc3545;
         border-color: #dc3545;
       }
@@ -323,82 +324,6 @@ HTML_TEMPLATE = """
       .actions-menu .btn:hover {
         background-color: rgba(255, 255, 255, 0.2);
         border-radius: 4px;
-      }
-      .folder-select-checkbox {
-        position: absolute;
-        top: 10px;
-        left: 10px;
-        z-index: 10;
-      }
-      .batch-actions {
-        display: none;
-        margin-bottom: 20px;
-      }
-      .sort-controls {
-        margin-bottom: 20px;
-      }
-      .file-item {
-        position: relative;
-        padding: 8px;
-        border-radius: 5px;
-        margin-bottom: 5px;
-        background: rgba(0,0,0,0.03);
-      }
-      .file-item:hover {
-        background: rgba(0,0,0,0.05);
-      }
-      .date-info {
-        font-size: 0.8rem;
-        color: #666;
-        margin-top: 5px;
-      }
-      /* Toggle switch for batch mode */
-      .switch {
-        position: relative;
-        display: inline-block;
-        width: 60px;
-        height: 30px;
-      }
-      .switch input {
-        opacity: 0;
-        width: 0;
-        height: 0;
-      }
-      .slider {
-        position: absolute;
-        cursor: pointer;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        background-color: #ccc;
-        transition: .4s;
-        border-radius: 34px;
-      }
-      .slider:before {
-        position: absolute;
-        content: "";
-        height: 22px;
-        width: 22px;
-        left: 4px;
-        bottom: 4px;
-        background-color: white;
-        transition: .4s;
-        border-radius: 50%;
-      }
-      input:checked + .slider {
-        background-color: #40C4FF;
-      }
-      input:focus + .slider {
-        box-shadow: 0 0 1px #40C4FF;
-      }
-      input:checked + .slider:before {
-        transform: translateX(30px);
-      }
-      .batch-mode-label {
-        margin-left: 10px;
-        font-weight: 500;
-        color: #37474F;
       }
     </style>
   </head>
@@ -420,18 +345,16 @@ HTML_TEMPLATE = """
         </a>
       </div>
       
-      <div id="alert-container">
-        {% with messages = get_flashed_messages(with_categories=true) %}
-          {% if messages %}
-            {% for category, message in messages %}
-              <div class="alert alert-{{ category }} alert-dismissible fade show">
-                {{ message }}
-                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-              </div>
-            {% endfor %}
-          {% endif %}
-        {% endwith %}
-      </div>
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          {% for category, message in messages %}
+            <div class="alert alert-{{ category }} alert-dismissible fade show">
+              {{ message }}
+              <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+          {% endfor %}
+        {% endif %}
+      {% endwith %}
       
       <ul class="nav nav-tabs" id="myTab" role="tablist">
         <li class="nav-item" role="presentation">
@@ -440,12 +363,17 @@ HTML_TEMPLATE = """
           </button>
         </li>
         <li class="nav-item" role="presentation">
+          <button class="nav-link" id="local-tab" data-bs-toggle="tab" data-bs-target="#local" type="button" role="tab">
+            <i class="fas fa-folder me-2"></i>Local Content
+          </button>
+        </li>
+        <li class="nav-item" role="presentation">
           <button class="nav-link" id="s3-tab" data-bs-toggle="tab" data-bs-target="#s3" type="button" role="tab">
             <i class="fas fa-cloud me-2"></i>S3 Content
           </button>
         </li>
       </ul>
-
+      
       <div class="tab-content" id="myTabContent">
         <!-- Upload Tab -->
         <div class="tab-pane fade show active" id="upload" role="tabpanel">
@@ -467,21 +395,73 @@ HTML_TEMPLATE = """
                 </form>
               </div>
               
-              <div class="row mb-3">
-                <div class="col-md-12">
-                  <div class="form-group">
-                    <label for="folderNameInput" class="form-label">Custom Folder Name (optional)</label>
-                    <input type="text" class="form-control" id="folderNameInput" 
-                           placeholder="Leave blank for auto-generated name (e.g., folder8)">
-                    <small class="form-text text-muted">Enter a custom name for your folder or leave blank for default naming.</small>
-                  </div>
-                </div>
-              </div>
-              
               <div id="previewContainer" class="preview-container"></div>
               
               <button id="uploadButton" class="btn btn-upload mt-3" disabled>Upload Files</button>
             </div>
+          </div>
+        </div>
+        
+        <!-- Local Content Tab -->
+        <div class="tab-pane fade" id="local" role="tabpanel">
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <h4 style="color: #37474F;">
+              <i class="fas fa-folder me-2"></i>
+              Local Content Library
+            </h4>
+            <button class="btn btn-sm btn-outline-secondary" onclick="window.location.reload()">
+              <i class="fas fa-sync-alt me-1"></i> Refresh
+            </button>
+          </div>
+          <p class="text-muted">Content stored in your local folders that can be used by the Twitter bot.</p>
+          
+          <div class="row" id="localContent">
+            {% if local_content %}
+              {% for item in local_content %}
+                <div class="col-md-4">
+                  <div class="card content-card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                      <span class="truncate">{{ item.folder }}</span>
+                      <div class="d-flex">
+                        <a href="/upload/upload-to-s3?folder={{ item.folder }}" class="btn btn-sm btn-outline-s3 me-2">
+                          <i class="fas fa-cloud-upload-alt"></i> Upload to S3
+                        </a>
+                        <div class="dropdown">
+                          <button class="btn btn-sm" type="button" id="localDropdownMenu{{loop.index}}" data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="fas fa-ellipsis-v"></i>
+                          </button>
+                          <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="localDropdownMenu{{loop.index}}">
+                            <li><a class="dropdown-item text-danger delete-folder" href="#" data-folder="{{ item.folder }}" data-location="local"><i class="fas fa-trash-alt me-2"></i>Delete</a></li>
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="card-body">
+                      {% if item.image_files %}
+                        <p><strong><i class="fas fa-image me-2" style="color: #40C4FF;"></i>Images:</strong> {{ item.image_files|length }}</p>
+                        <p class="truncate"><small>{{ ', '.join(item.image_files) }}</small></p>
+                      {% else %}
+                        <p class="text-muted"><i class="fas fa-image me-2"></i>No images</p>
+                      {% endif %}
+                      
+                      {% if item.text_files %}
+                        <p><strong><i class="fas fa-file-alt me-2" style="color: #78909C;"></i>Text files:</strong> {{ item.text_files|length }}</p>
+                        <p class="truncate"><small>{{ ', '.join(item.text_files) }}</small></p>
+                      {% else %}
+                        <p class="text-muted"><i class="fas fa-file-alt me-2"></i>No text files</p>
+                      {% endif %}
+                    </div>
+                  </div>
+                </div>
+              {% endfor %}
+            {% else %}
+              <div class="col-12">
+                <div class="alert alert-info">
+                  <i class="fas fa-info-circle me-2"></i>
+                  No local content found. Upload content using the Upload tab.
+                </div>
+              </div>
+            {% endif %}
           </div>
         </div>
         
@@ -492,89 +472,27 @@ HTML_TEMPLATE = """
               <i class="fas fa-cloud me-2"></i>
               S3 Cloud Storage
             </h4>
-            <div class="d-flex align-items-center">
-              <label class="switch me-2">
-                <input type="checkbox" id="batchModeToggle">
-                <span class="slider"></span>
-              </label>
-              <span class="batch-mode-label">Batch Mode</span>
-              <button class="btn btn-sm btn-outline-secondary ms-3" id="refreshContentBtn">
-                <i class="fas fa-sync-alt me-1"></i> Refresh
-              </button>
-            </div>
+            <button class="btn btn-sm btn-outline-secondary" onclick="window.location.reload()">
+              <i class="fas fa-sync-alt me-1"></i> Refresh
+            </button>
           </div>
           <p class="text-muted">Content stored in AWS S3 that can be used by the Twitter bot.</p>
-          
-          <!-- Sort and filter controls -->
-          <div class="row mb-3 sort-controls">
-            <div class="col-md-4">
-              <label class="form-label">Sort By:</label>
-              <select class="form-select" id="sortBySelect">
-                <option value="newest">Newest First</option>
-                <option value="oldest">Oldest First</option>
-                <option value="name-asc">Name (A-Z)</option>
-                <option value="name-desc">Name (Z-A)</option>
-                <option value="count">File Count</option>
-              </select>
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Filter:</label>
-              <input type="text" class="form-control" id="filterInput" placeholder="Filter by folder name">
-            </div>
-          </div>
-          
-          <!-- Batch operation controls (hidden by default) -->
-          <div class="batch-actions" id="batchActionsContainer">
-            <div class="d-flex align-items-center justify-content-between">
-              <div>
-                <span class="me-2" id="selectedCount">0 folders selected</span>
-                <button class="btn btn-sm btn-outline-primary me-2" id="selectAllBtn">
-                  <i class="fas fa-check-square me-1"></i> Select All
-                </button>
-                <button class="btn btn-sm btn-outline-secondary" id="deselectAllBtn">
-                  <i class="fas fa-square me-1"></i> Deselect All
-                </button>
-              </div>
-              <div>
-                <button class="btn btn-sm btn-danger me-2" id="deleteSelectedBtn" disabled>
-                  <i class="fas fa-trash-alt me-1"></i> Delete Selected
-                </button>
-                <button class="btn btn-sm btn-primary" id="downloadSelectedBtn" disabled>
-                  <i class="fas fa-download me-1"></i> Download Selected
-                </button>
-              </div>
-            </div>
-          </div>
           
           <div class="row" id="s3Content">
             {% if has_s3_config %}
               {% if s3_content %}
                 {% for item in s3_content %}
-                  <div class="col-md-4 folder-item" data-folder="{{ item.folder }}" data-timestamp="{{ item.timestamp }}">
+                  <div class="col-md-4">
                     <div class="card content-card">
-                      <!-- Checkbox for batch operations (hidden initially) -->
-                      <div class="form-check folder-select-checkbox d-none">
-                        <input class="form-check-input" type="checkbox" value="{{ item.folder }}" id="folder-check-{{ loop.index }}">
-                      </div>
-                      
                       <div class="card-header d-flex justify-content-between align-items-center">
-                        <span class="truncate" title="{{ item.folder }}">{{ item.folder }}</span>
+                        <span class="truncate">{{ item.folder }}</span>
                         <div class="actions-menu">
                           <div class="dropdown">
-                            <button class="btn btn-sm" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                            <button class="btn btn-sm" type="button" id="dropdownMenuButton{{loop.index}}" data-bs-toggle="dropdown" aria-expanded="false">
                               <i class="fas fa-ellipsis-v"></i>
                             </button>
-                            <ul class="dropdown-menu dropdown-menu-end">
-                              <li><a class="dropdown-item rename-folder" href="#" data-folder="{{ item.folder }}">
-                                <i class="fas fa-edit me-2"></i>Rename
-                              </a></li>
-                              <li><a class="dropdown-item download-folder" href="#" data-folder="{{ item.folder }}">
-                                <i class="fas fa-download me-2"></i>Download as ZIP
-                              </a></li>
-                              <li><hr class="dropdown-divider"></li>
-                              <li><a class="dropdown-item text-danger delete-folder" href="#" data-folder="{{ item.folder }}">
-                                <i class="fas fa-trash-alt me-2"></i>Delete
-                              </a></li>
+                            <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="dropdownMenuButton{{loop.index}}">
+                              <li><a class="dropdown-item text-danger delete-folder" href="#" data-folder="{{ item.folder }}" data-location="s3"><i class="fas fa-trash-alt me-2"></i>Delete</a></li>
                             </ul>
                           </div>
                         </div>
@@ -582,39 +500,22 @@ HTML_TEMPLATE = """
                       <div class="card-body">
                         {% if item.image_files %}
                           <p><strong><i class="fas fa-image me-2" style="color: #40C4FF;"></i>Images:</strong> {{ item.image_files|length }}</p>
-                          <div class="file-container">
-                            {% for file in item.image_files[:3] %}
-                              <div class="file-item">
-                                <i class="fas fa-file-image me-1" style="color: #40C4FF;"></i> {{ file }}
-                              </div>
-                            {% endfor %}
-                            {% if item.image_files|length > 3 %}
-                              <small class="text-muted">And {{ item.image_files|length - 3 }} more...</small>
-                            {% endif %}
-                          </div>
+                          <p class="truncate"><small>{{ ', '.join(item.image_files) }}</small></p>
                         {% else %}
                           <p class="text-muted"><i class="fas fa-image me-2"></i>No images</p>
                         {% endif %}
                         
                         {% if item.text_files %}
                           <p><strong><i class="fas fa-file-alt me-2" style="color: #78909C;"></i>Text files:</strong> {{ item.text_files|length }}</p>
-                          <div class="file-container">
-                            {% for file in item.text_files[:3] %}
-                              <div class="file-item">
-                                <i class="fas fa-file-alt me-1" style="color: #78909C;"></i> {{ file }}
-                              </div>
-                            {% endfor %}
-                            {% if item.text_files|length > 3 %}
-                              <small class="text-muted">And {{ item.text_files|length - 3 }} more...</small>
-                            {% endif %}
-                          </div>
+                          <p class="truncate"><small>{{ ', '.join(item.text_files) }}</small></p>
                         {% else %}
                           <p class="text-muted"><i class="fas fa-file-alt me-2"></i>No text files</p>
                         {% endif %}
                         
-                        <div class="date-info mt-2">
-                          <i class="fas fa-clock me-1"></i> {{ item.last_modified.strftime('%Y-%m-%d %H:%M:%S') if item.last_modified else 'Unknown date' }}
-                        </div>
+                        <p class="text-muted small truncate">
+                          <i class="fas fa-link me-1"></i>
+                          {{ item.s3_path }}
+                        </p>
                       </div>
                     </div>
                   </div>
@@ -623,7 +524,7 @@ HTML_TEMPLATE = """
                 <div class="col-12">
                   <div class="alert alert-info">
                     <i class="fas fa-info-circle me-2"></i>
-                    No content found in S3. Upload content using the Upload tab.
+                    No content found in S3. Upload local content to S3 from the Local Content tab.
                   </div>
                 </div>
               {% endif %}
@@ -639,7 +540,7 @@ HTML_TEMPLATE = """
         </div>
       </div>
     </div>
-
+    
     <footer>
       <div class="container">
         <div class="row">
@@ -651,10 +552,10 @@ HTML_TEMPLATE = """
     </footer>
     
     <!-- Delete Confirmation Modal -->
-    <div class="modal fade" id="deleteConfirmationModal" tabindex="-1" aria-labelledby="deleteConfirmationModalLabel" aria-hidden="true">
+    <div class="modal fade delete-confirmation-modal" id="deleteConfirmationModal" tabindex="-1" aria-labelledby="deleteConfirmationModalLabel" aria-hidden="true">
       <div class="modal-dialog">
         <div class="modal-content">
-          <div class="modal-header danger">
+          <div class="modal-header">
             <h5 class="modal-title" id="deleteConfirmationModalLabel">
               <i class="fas fa-exclamation-triangle me-2"></i>
               Confirm Deletion
@@ -673,123 +574,13 @@ HTML_TEMPLATE = """
       </div>
     </div>
     
-    <!-- Batch Delete Confirmation Modal -->
-    <div class="modal fade" id="batchDeleteModal" tabindex="-1" aria-labelledby="batchDeleteModalLabel" aria-hidden="true">
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <div class="modal-header danger">
-            <h5 class="modal-title" id="batchDeleteModalLabel">
-              <i class="fas fa-exclamation-triangle me-2"></i>
-              Confirm Batch Deletion
-            </h5>
-            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
-          </div>
-          <div class="modal-body">
-            <p>Are you sure you want to delete <strong id="folderCountToDelete"></strong> selected folders?</p>
-            <div id="foldersToDeleteList" class="alert alert-secondary" style="max-height: 200px; overflow-y: auto;"></div>
-            <p class="text-danger"><i class="fas fa-exclamation-circle me-2"></i>This action cannot be undone!</p>
-          </div>
-          <div class="modal-footer">
-            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-            <button type="button" class="btn btn-danger" id="confirmBatchDeleteBtn">Delete All Selected</button>
-          </div>
-        </div>
-      </div>
-    </div>
-    
-    <!-- Rename Folder Modal -->
-    <div class="modal fade" id="renameFolderModal" tabindex="-1" aria-labelledby="renameFolderModalLabel" aria-hidden="true">
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <div class="modal-header primary">
-            <h5 class="modal-title" id="renameFolderModalLabel">
-              <i class="fas fa-edit me-2"></i>
-              Rename Folder
-            </h5>
-            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
-          </div>
-          <div class="modal-body">
-            <p>Rename folder <strong id="currentFolderName"></strong>:</p>
-            <div class="mb-3">
-              <label for="newFolderName" class="form-label">New folder name:</label>
-              <input type="text" class="form-control" id="newFolderName" required>
-              <div class="invalid-feedback">
-                Please enter a valid folder name (letters, numbers, underscores, and hyphens only).
-              </div>
-            </div>
-          </div>
-          <div class="modal-footer">
-            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-            <button type="button" class="btn btn-primary" id="confirmRenameBtn">Rename</button>
-          </div>
-        </div>
-      </div>
-    </div>
-    
-    <!-- Loading Modal -->
-    <div class="modal fade" id="loadingModal" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1" aria-labelledby="loadingModalLabel" aria-hidden="true">
-      <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content">
-          <div class="modal-body text-center p-4">
-            <div class="spinner-border text-primary mb-3" role="status" style="width: 3rem; height: 3rem;">
-              <span class="visually-hidden">Loading...</span>
-            </div>
-            <h5 id="loadingModalLabel" class="mt-3">Processing your request...</h5>
-            <p id="loadingModalMessage" class="text-muted">This may take a few moments.</p>
-          </div>
-        </div>
-      </div>
-    </div>
-
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-      // Bootstrap modal instances
-      const deleteModal = new bootstrap.Modal(document.getElementById('deleteConfirmationModal'));
-      const batchDeleteModal = new bootstrap.Modal(document.getElementById('batchDeleteModal'));
-      const renameModal = new bootstrap.Modal(document.getElementById('renameFolderModal'));
-      const loadingModal = new bootstrap.Modal(document.getElementById('loadingModal'));
-      
-      // Show loading overlay
-      function showLoading(message = "Processing your request...") {
-        document.getElementById('loadingModalMessage').textContent = message;
-        loadingModal.show();
-      }
-      
-      // Hide loading overlay
-      function hideLoading() {
-        loadingModal.hide();
-      }
-      
-      // Show a notification message
-      function showNotification(message, type = 'success') {
-        const alertContainer = document.getElementById('alert-container');
-        const alertDiv = document.createElement('div');
-        alertDiv.className = `alert alert-${type} alert-dismissible fade show`;
-        alertDiv.innerHTML = `
-          <i class="fas fa-${type === 'success' ? 'check-circle' : 'exclamation-circle'} me-2"></i>
-          ${message}
-          <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-        `;
-        alertContainer.appendChild(alertDiv);
-        
-        // Auto-dismiss after 5 seconds
-        setTimeout(() => {
-          alertDiv.classList.remove('show');
-          setTimeout(() => alertDiv.remove(), 300);
-        }, 5000);
-      }
-      
-      // Refresh content handler
-      document.getElementById('refreshContentBtn').addEventListener('click', function() {
-        window.location.reload();
-      });
-      
       // Drag and drop functionality
       const dropArea = document.getElementById('drop-area');
       const fileInput = document.getElementById('fileInput');
       const previewContainer = document.getElementById('previewContainer');
       const uploadButton = document.getElementById('uploadButton');
-      const folderNameInput = document.getElementById('folderNameInput');
       
       // Prevent default drag behaviors
       ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
@@ -932,12 +723,6 @@ HTML_TEMPLATE = """
         // Create FormData
         const formData = new FormData();
         
-        // Add custom folder name if provided
-        const customFolderName = folderNameInput.value.trim();
-        if (customFolderName) {
-          formData.append('folder_name', customFolderName);
-        }
-        
         // Add all valid pairs to the FormData
         validPairs.forEach(item => {
           // Find the file objects in the file input that match our preview items
@@ -960,7 +745,6 @@ HTML_TEMPLATE = """
         // Show loading state
         uploadButton.disabled = true;
         uploadButton.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Uploading...';
-        showLoading("Uploading files to S3...");
         
         // Send Ajax request
         fetch('/upload/upload-files', {
@@ -969,32 +753,31 @@ HTML_TEMPLATE = """
         })
         .then(response => response.json())
         .then(data => {
-          hideLoading();
           if (data.success) {
             // Clear preview
             previewContainer.innerHTML = '';
             fileInput.value = '';
-            folderNameInput.value = '';
             
             // Show success message
-            showNotification(data.message, 'success');
+            const alertDiv = document.createElement('div');
+            alertDiv.className = 'alert alert-success';
+            alertDiv.innerHTML = `<i class="fas fa-check-circle me-2"></i>${data.message}`;
+            previewContainer.appendChild(alertDiv);
             
             // Reset button
             uploadButton.innerHTML = '<i class="fas fa-upload me-2"></i>Upload Files';
             uploadButton.disabled = true;
             
-            // Switch to S3 tab after a delay
+            // Refresh content tabs after a delay
             setTimeout(() => {
-              document.getElementById('s3-tab').click();
-              
-              // Refresh content after switching tabs
-              setTimeout(() => {
-                refreshS3Content();
-              }, 500);
-            }, 1000);
+              window.location.reload();
+            }, 2000);
           } else {
             // Show error
-            showNotification(data.message, 'danger');
+            const alertDiv = document.createElement('div');
+            alertDiv.className = 'alert alert-danger';
+            alertDiv.innerHTML = `<i class="fas fa-exclamation-circle me-2"></i>${data.message}`;
+            previewContainer.appendChild(alertDiv);
             
             // Reset button
             uploadButton.innerHTML = '<i class="fas fa-redo me-2"></i>Try Again';
@@ -1002,11 +785,13 @@ HTML_TEMPLATE = """
           }
         })
         .catch(error => {
-          hideLoading();
           console.error('Error:', error);
           
           // Show error
-          showNotification('An error occurred during upload. Please try again.', 'danger');
+          const alertDiv = document.createElement('div');
+          alertDiv.className = 'alert alert-danger';
+          alertDiv.innerHTML = '<i class="fas fa-exclamation-circle me-2"></i>An error occurred during upload. Please try again.';
+          previewContainer.appendChild(alertDiv);
           
           // Reset button
           uploadButton.innerHTML = '<i class="fas fa-redo me-2"></i>Try Again';
@@ -1014,596 +799,164 @@ HTML_TEMPLATE = """
         });
       }
       
-      // Refresh S3 content without full page reload
-      function refreshS3Content() {
-        showLoading("Refreshing content...");
-        
-        fetch('/upload/get-s3-content')
-          .then(response => response.json())
-          .then(data => {
-            hideLoading();
-            if (data.success) {
-              // Replace the content of s3Content with the updated HTML
-              document.getElementById('s3Content').innerHTML = data.html;
-              
-              // Reattach event handlers
-              attachEventHandlers();
-              
-              showNotification("Content refreshed successfully", "success");
-            } else {
-              showNotification("Failed to refresh content: " + data.message, "danger");
-            }
-          })
-          .catch(error => {
-            hideLoading();
-            console.error('Error refreshing content:', error);
-            showNotification("Error refreshing content. Please try again.", "danger");
-          });
-      }
-
       // Delete folder functionality
-      function attachEventHandlers() {
-        // Delete button handlers
-        document.querySelectorAll('.delete-folder').forEach(button => {
+      document.addEventListener('DOMContentLoaded', function() {
+        // Get all delete buttons
+        const deleteButtons = document.querySelectorAll('.delete-folder');
+        const deleteModal = new bootstrap.Modal(document.getElementById('deleteConfirmationModal'));
+        const folderNameElement = document.getElementById('folderNameToDelete');
+        const confirmDeleteBtn = document.getElementById('confirmDeleteBtn');
+        
+        let folderToDelete = '';
+        let locationToDeleteFrom = 'both'; // Default to both local and S3
+        
+        // Add click handlers to all delete buttons
+        deleteButtons.forEach(button => {
           button.addEventListener('click', function(e) {
             e.preventDefault();
             
-            // Get folder name from data attribute
-            const folderToDelete = this.getAttribute('data-folder');
+            // Get folder name and location from data attributes
+            folderToDelete = this.getAttribute('data-folder');
+            locationToDeleteFrom = this.getAttribute('data-location');
             
             // Update the modal text
-            document.getElementById('folderNameToDelete').textContent = folderToDelete;
+            folderNameElement.textContent = folderToDelete;
             
             // Show the confirmation modal
             deleteModal.show();
-            
-            // Setup confirm button
-            document.getElementById('confirmDeleteBtn').onclick = function() {
-              deleteFolder(folderToDelete);
-            };
           });
         });
         
-        // Rename button handlers
-        document.querySelectorAll('.rename-folder').forEach(button => {
-          button.addEventListener('click', function(e) {
-            e.preventDefault();
-            
-            // Get folder name from data attribute
-            const folderToRename = this.getAttribute('data-folder');
-            
-            // Update the modal text
-            document.getElementById('currentFolderName').textContent = folderToRename;
-            document.getElementById('newFolderName').value = folderToRename;
-            
-            // Show the confirmation modal
-            renameModal.show();
-            
-            // Setup confirm button
-            document.getElementById('confirmRenameBtn').onclick = function() {
-              renameFolder(folderToRename, document.getElementById('newFolderName').value.trim());
-            };
-          });
-        });
-        
-        // Download button handlers
-        document.querySelectorAll('.download-folder').forEach(button => {
-          button.addEventListener('click', function(e) {
-            e.preventDefault();
-            
-            // Get folder name from data attribute
-            const folderToDownload = this.getAttribute('data-folder');
-            
-            // Trigger download
-            downloadFolder(folderToDownload);
-          });
-        });
-        
-        // Setup batch mode checkboxes
-        if (document.getElementById('batchModeToggle').checked) {
-          document.querySelectorAll('.folder-select-checkbox').forEach(checkbox => {
-            checkbox.classList.remove('d-none');
-          });
-          document.getElementById('batchActionsContainer').style.display = 'block';
-        }
-      }
-      
-      // Attach event handlers on page load
-      document.addEventListener('DOMContentLoaded', function() {
-        attachEventHandlers();
-        
-        // Batch mode toggle
-        document.getElementById('batchModeToggle').addEventListener('change', function() {
-          const checkboxes = document.querySelectorAll('.folder-select-checkbox');
-          const batchActionsContainer = document.getElementById('batchActionsContainer');
+        // Handle confirmation button click
+        confirmDeleteBtn.addEventListener('click', function() {
+          // Disable the button and show loading state
+          confirmDeleteBtn.disabled = true;
+          confirmDeleteBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Deleting...';
           
-          if (this.checked) {
-            // Show checkboxes and batch actions
-            checkboxes.forEach(checkbox => checkbox.classList.remove('d-none'));
-            batchActionsContainer.style.display = 'block';
-          } else {
-            // Hide checkboxes and batch actions
-            checkboxes.forEach(checkbox => checkbox.classList.add('d-none'));
-            batchActionsContainer.style.display = 'none';
-          }
-        });
-        
-        // Select/Deselect All buttons
-        document.getElementById('selectAllBtn').addEventListener('click', function() {
-          document.querySelectorAll('.folder-select-checkbox input').forEach(checkbox => {
-            checkbox.checked = true;
+          // Send delete request to server
+          fetch('/upload/delete-folder', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              folder: folderToDelete,
+              delete_from: locationToDeleteFrom
+            })
+          })
+          .then(response => response.json())
+          .then(data => {
+            // Hide the modal
+            deleteModal.hide();
+            
+            // Show result message
+            const alertType = data.success ? 'success' : 'danger';
+            const alertIcon = data.success ? 'check-circle' : 'exclamation-circle';
+            
+            const alertDiv = document.createElement('div');
+            alertDiv.className = `alert alert-${alertType} alert-dismissible fade show`;
+            alertDiv.innerHTML = `
+              <i class="fas fa-${alertIcon} me-2"></i>
+              ${data.message}
+              <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            `;
+            
+            // Insert the alert at the top of the page
+            const container = document.querySelector('.container');
+            container.insertBefore(alertDiv, container.firstChild);
+            
+            // Refresh the page after a brief delay
+            setTimeout(() => {
+              window.location.reload();
+            }, 1500);
+          })
+          .catch(error => {
+            console.error('Error deleting folder:', error);
+            
+            // Show error message
+            const alertDiv = document.createElement('div');
+            alertDiv.className = 'alert alert-danger alert-dismissible fade show';
+            alertDiv.innerHTML = `
+              <i class="fas fa-exclamation-circle me-2"></i>
+              An error occurred while deleting the folder. Please try again.
+              <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            `;
+            
+            // Insert the alert
+            const container = document.querySelector('.container');
+            container.insertBefore(alertDiv, container.firstChild);
+            
+            // Hide the modal
+            deleteModal.hide();
+            
+            // Reset the button
+            confirmDeleteBtn.disabled = false;
+            confirmDeleteBtn.innerHTML = 'Delete';
           });
-          updateSelectedCount();
         });
         
-        document.getElementById('deselectAllBtn').addEventListener('click', function() {
-          document.querySelectorAll('.folder-select-checkbox input').forEach(checkbox => {
-            checkbox.checked = false;
-          });
-          updateSelectedCount();
+        // Reset the confirm button when the modal is hidden
+        document.getElementById('deleteConfirmationModal').addEventListener('hidden.bs.modal', function () {
+          confirmDeleteBtn.disabled = false;
+          confirmDeleteBtn.innerHTML = 'Delete';
         });
-        
-        // Selection count and batch operation buttons
-        document.addEventListener('change', function(e) {
-          if (e.target.matches('.folder-select-checkbox input')) {
-            updateSelectedCount();
-          }
-        });
-        
-        // Batch delete button
-        document.getElementById('deleteSelectedBtn').addEventListener('click', function() {
-          const selectedFolders = getSelectedFolders();
-          if (selectedFolders.length === 0) return;
-          
-          // Update the modal text
-          document.getElementById('folderCountToDelete').textContent = selectedFolders.length;
-          
-          // Update the folders list
-          const listEl = document.getElementById('foldersToDeleteList');
-          listEl.innerHTML = '';
-          selectedFolders.forEach(folder => {
-            const folderItem = document.createElement('div');
-            folderItem.innerHTML = `<i class="fas fa-folder me-2"></i>${folder}`;
-            listEl.appendChild(folderItem);
-          });
-          
-          // Show the confirmation modal
-          batchDeleteModal.show();
-          
-          // Setup confirm button
-          document.getElementById('confirmBatchDeleteBtn').onclick = function() {
-          deleteMultipleFolders(selectedFolders);
-          };
-        });
-        
-        // Batch download button
-        document.getElementById('downloadSelectedBtn').addEventListener('click', function() {
-          const selectedFolders = getSelectedFolders();
-          if (selectedFolders.length === 0) return;
-          
-          // For now, we only support downloading one folder at a time
-          if (selectedFolders.length === 1) {
-            downloadFolder(selectedFolders[0]);
-          } else {
-            showNotification("Batch download is not yet supported. Please select just one folder.", "warning");
-          }
-        });
-        
-        // Sort and filter
-        document.getElementById('sortBySelect').addEventListener('change', sortFolders);
-        document.getElementById('filterInput').addEventListener('input', filterFolders);
       });
-      
-      // Get selected folders
-      function getSelectedFolders() {
-        const selectedCheckboxes = document.querySelectorAll('.folder-select-checkbox input:checked');
-        return Array.from(selectedCheckboxes).map(checkbox => checkbox.value);
-      }
-      
-      // Update selected count and button states
-      function updateSelectedCount() {
-        const selectedFolders = getSelectedFolders();
-        const count = selectedFolders.length;
-        
-        // Update the count display
-        document.getElementById('selectedCount').textContent = `${count} folder${count !== 1 ? 's' : ''} selected`;
-        
-        // Update button states
-        document.getElementById('deleteSelectedBtn').disabled = count === 0;
-        document.getElementById('downloadSelectedBtn').disabled = count === 0;
-      }
-      
-      // Delete a single folder
-      function deleteFolder(folderName) {
-        // Show loading
-        showLoading("Deleting folder...");
-        deleteModal.hide();
-        
-        fetch('/upload/delete-folder', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            folder: folderName
-          })
-        })
-        .then(response => response.json())
-        .then(data => {
-          hideLoading();
-          
-          if (data.success) {
-            showNotification(`Folder "${folderName}" successfully deleted.`, "success");
-            
-            // Remove the folder card from the UI
-            const folderCard = document.querySelector(`.folder-item[data-folder="${folderName}"]`);
-            if (folderCard) {
-              folderCard.remove();
-            }
-            
-            // Check if no folders left
-            if (document.querySelectorAll('.folder-item').length === 0) {
-              document.getElementById('s3Content').innerHTML = `
-                <div class="col-12">
-                  <div class="alert alert-info">
-                    <i class="fas fa-info-circle me-2"></i>
-                    No content found in S3. Upload content using the Upload tab.
-                  </div>
-                </div>
-              `;
-            }
-          } else {
-            showNotification(`Error: ${data.message}`, "danger");
-          }
-        })
-        .catch(error => {
-          hideLoading();
-          console.error('Error deleting folder:', error);
-          showNotification("Failed to delete folder. Please try again.", "danger");
-        });
-      }
-      
-      // Delete multiple folders
-      function deleteMultipleFolders(folderNames) {
-        // Show loading
-        showLoading(`Deleting ${folderNames.length} folders...`);
-        batchDeleteModal.hide();
-        
-        fetch('/upload/batch-delete', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            folders: folderNames
-          })
-        })
-        .then(response => response.json())
-        .then(data => {
-          hideLoading();
-          
-          if (data.success) {
-            showNotification(`Successfully deleted ${data.deleted_count} folders.`, "success");
-            
-            // Remove the folder cards from the UI
-            folderNames.forEach(folderName => {
-              const folderCard = document.querySelector(`.folder-item[data-folder="${folderName}"]`);
-              if (folderCard) {
-                folderCard.remove();
-              }
-            });
-            
-            // Reset checkboxes
-            document.querySelectorAll('.folder-select-checkbox input').forEach(checkbox => {
-              checkbox.checked = false;
-            });
-            updateSelectedCount();
-            
-            // Check if no folders left
-            if (document.querySelectorAll('.folder-item').length === 0) {
-              document.getElementById('s3Content').innerHTML = `
-                <div class="col-12">
-                  <div class="alert alert-info">
-                    <i class="fas fa-info-circle me-2"></i>
-                    No content found in S3. Upload content using the Upload tab.
-                  </div>
-                </div>
-              `;
-            }
-          } else {
-            showNotification(`Error: ${data.message}`, "danger");
-          }
-        })
-        .catch(error => {
-          hideLoading();
-          console.error('Error deleting folders:', error);
-          showNotification("Failed to delete folders. Please try again.", "danger");
-        });
-      }
-      
-      // Rename a folder
-      function renameFolder(oldName, newName) {
-        // Basic validation
-        if (!newName) {
-          document.getElementById('newFolderName').classList.add('is-invalid');
-          return;
-        }
-        
-        // Validate folder name (letters, numbers, underscores, hyphens)
-        if (!/^[a-zA-Z0-9_-]+$/.test(newName)) {
-          document.getElementById('newFolderName').classList.add('is-invalid');
-          return;
-        }
-        
-        // Show loading
-        showLoading("Renaming folder...");
-        renameModal.hide();
-        
-        fetch('/upload/rename-folder', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            old_name: oldName,
-            new_name: newName
-          })
-        })
-        .then(response => response.json())
-        .then(data => {
-          hideLoading();
-          
-          if (data.success) {
-            showNotification(`Folder renamed from "${oldName}" to "${newName}".`, "success");
-            
-            // Refresh the content
-            refreshS3Content();
-          } else {
-            showNotification(`Error: ${data.message}`, "danger");
-          }
-        })
-        .catch(error => {
-          hideLoading();
-          console.error('Error renaming folder:', error);
-          showNotification("Failed to rename folder. Please try again.", "danger");
-        });
-      }
-      
-      // Download a folder as ZIP
-      function downloadFolder(folderName) {
-        showLoading(`Preparing ${folderName} for download...`);
-        
-        // Create a link to trigger the download
-        const downloadLink = document.createElement('a');
-        downloadLink.href = `/upload/download-folder?folder=${encodeURIComponent(folderName)}`;
-        downloadLink.setAttribute('download', `${folderName}.zip`);
-        document.body.appendChild(downloadLink);
-        
-        // Click the link to start the download
-        downloadLink.click();
-        
-        // Clean up
-        document.body.removeChild(downloadLink);
-        
-        // Hide loading after a short delay to account for browser download dialog
-        setTimeout(() => {
-          hideLoading();
-          showNotification(`Download initiated for folder "${folderName}".`, "success");
-        }, 1000);
-      }
-      
-      // Sort folders
-      function sortFolders() {
-        const sortBy = document.getElementById('sortBySelect').value;
-        const folderItems = Array.from(document.querySelectorAll('.folder-item'));
-        const container = document.getElementById('s3Content');
-        
-        // Remove all folder items
-        folderItems.forEach(item => container.removeChild(item));
-        
-        // Sort the items
-        folderItems.sort((a, b) => {
-          const folderA = a.getAttribute('data-folder').toLowerCase();
-          const folderB = b.getAttribute('data-folder').toLowerCase();
-          const timestampA = parseFloat(a.getAttribute('data-timestamp') || 0);
-          const timestampB = parseFloat(b.getAttribute('data-timestamp') || 0);
-          const countA = a.querySelectorAll('.file-item').length;
-          const countB = b.querySelectorAll('.file-item').length;
-          
-          switch(sortBy) {
-            case 'newest':
-              return timestampB - timestampA;
-            case 'oldest':
-              return timestampA - timestampB;
-            case 'name-asc':
-              return folderA.localeCompare(folderB);
-            case 'name-desc':
-              return folderB.localeCompare(folderA);
-            case 'count':
-              return countB - countA;
-            default:
-              return 0;
-          }
-        });
-        
-        // Add the sorted items back
-        folderItems.forEach(item => container.appendChild(item));
-      }
-      
-      // Filter folders
-      function filterFolders() {
-        const filterText = document.getElementById('filterInput').value.toLowerCase();
-        const folderItems = document.querySelectorAll('.folder-item');
-        
-        folderItems.forEach(item => {
-          const folderName = item.getAttribute('data-folder').toLowerCase();
-          
-          if (folderName.includes(filterText)) {
-            item.style.display = '';
-          } else {
-            item.style.display = 'none';
-          }
-        });
-      }
     </script>
   </body>
 </html>
 """
 
-@app.route("/")
-def index():
-    """Redirect to dashboard page."""
-    return redirect(url_for('upload_dashboard.dashboard'))
-
-@app.route("/dashboard")
+@app.route("/", methods=["GET"])
 def dashboard():
     """Main dashboard page."""
+    local_content = get_local_content()
     s3_content = get_s3_content() if has_s3_config else []
     
     return render_template_string(
         HTML_TEMPLATE, 
+        local_content=local_content,
         s3_content=s3_content,
         has_s3_config=has_s3_config
     )
 
-@app.route("/get-s3-content")
-def get_s3_content_route():
-    """API endpoint to get S3 content for refreshing."""
-    try:
-        s3_content = get_s3_content() if has_s3_config else []
-        
-        # Render just the S3 content section as HTML
-        from flask import render_template
-        html = render_template_string("""
-            {% if s3_content %}
-                {% for item in s3_content %}
-                  <div class="col-md-4 folder-item" data-folder="{{ item.folder }}" data-timestamp="{{ item.timestamp }}">
-                    <div class="card content-card">
-                      <!-- Checkbox for batch operations (hidden initially) -->
-                      <div class="form-check folder-select-checkbox d-none">
-                        <input class="form-check-input" type="checkbox" value="{{ item.folder }}" id="folder-check-{{ loop.index }}">
-                      </div>
-                      
-                      <div class="card-header d-flex justify-content-between align-items-center">
-                        <span class="truncate" title="{{ item.folder }}">{{ item.folder }}</span>
-                        <div class="actions-menu">
-                          <div class="dropdown">
-                            <button class="btn btn-sm" type="button" data-bs-toggle="dropdown" aria-expanded="false">
-                              <i class="fas fa-ellipsis-v"></i>
-                            </button>
-                            <ul class="dropdown-menu dropdown-menu-end">
-                              <li><a class="dropdown-item rename-folder" href="#" data-folder="{{ item.folder }}">
-                                <i class="fas fa-edit me-2"></i>Rename
-                              </a></li>
-                              <li><a class="dropdown-item download-folder" href="#" data-folder="{{ item.folder }}">
-                                <i class="fas fa-download me-2"></i>Download as ZIP
-                              </a></li>
-                              <li><hr class="dropdown-divider"></li>
-                              <li><a class="dropdown-item text-danger delete-folder" href="#" data-folder="{{ item.folder }}">
-                                <i class="fas fa-trash-alt me-2"></i>Delete
-                              </a></li>
-                            </ul>
-                          </div>
-                        </div>
-                      </div>
-                      <div class="card-body">
-                        {% if item.image_files %}
-                          <p><strong><i class="fas fa-image me-2" style="color: #40C4FF;"></i>Images:</strong> {{ item.image_files|length }}</p>
-                          <div class="file-container">
-                            {% for file in item.image_files[:3] %}
-                              <div class="file-item">
-                                <i class="fas fa-file-image me-1" style="color: #40C4FF;"></i> {{ file }}
-                              </div>
-                            {% endfor %}
-                            {% if item.image_files|length > 3 %}
-                              <small class="text-muted">And {{ item.image_files|length - 3 }} more...</small>
-                            {% endif %}
-                          </div>
-                        {% else %}
-                          <p class="text-muted"><i class="fas fa-image me-2"></i>No images</p>
-                        {% endif %}
-                        
-                        {% if item.text_files %}
-                          <p><strong><i class="fas fa-file-alt me-2" style="color: #78909C;"></i>Text files:</strong> {{ item.text_files|length }}</p>
-                          <div class="file-container">
-                            {% for file in item.text_files[:3] %}
-                              <div class="file-item">
-                                <i class="fas fa-file-alt me-1" style="color: #78909C;"></i> {{ file }}
-                              </div>
-                            {% endfor %}
-                            {% if item.text_files|length > 3 %}
-                              <small class="text-muted">And {{ item.text_files|length - 3 }} more...</small>
-                            {% endif %}
-                          </div>
-                        {% else %}
-                          <p class="text-muted"><i class="fas fa-file-alt me-2"></i>No text files</p>
-                        {% endif %}
-                        
-                        <div class="date-info mt-2">
-                          <i class="fas fa-clock me-1"></i> {{ item.last_modified.strftime('%Y-%m-%d %H:%M:%S') if item.last_modified else 'Unknown date' }}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                {% endfor %}
-              {% else %}
-                <div class="col-12">
-                  <div class="alert alert-info">
-                    <i class="fas fa-info-circle me-2"></i>
-                    No content found in S3. Upload content using the Upload tab.
-                  </div>
-                </div>
-              {% endif %}
-        """, s3_content=s3_content)
-        
-        return jsonify({
-            "success": True,
-            "html": html
-        })
-    except Exception as e:
-        logger.error(f"Error getting S3 content: {e}")
-        return jsonify({
-            "success": False,
-            "message": f"Error retrieving content: {str(e)}"
-        })
-
 @app.route("/upload-files", methods=["POST"])
 def upload_files():
-    """Handle file uploads via AJAX with direct S3 upload."""
+    """Handle file uploads via AJAX."""
+    # Add detailed logging for request diagnostics
+    logger.info(f"Upload request received with Content-Type: {request.content_type}")
+    logger.info(f"Files in request: {list(request.files.keys())}")
+    logger.info(f"Form data keys: {list(request.form.keys())}")
+    
+    if 'images' not in request.files or 'texts' not in request.files:
+        logger.error(f"Missing required file types. Available keys: {list(request.files.keys())}")
+        return jsonify({"success": False, "message": "No files uploaded"})
+    
+    images = request.files.getlist('images')
+    texts = request.files.getlist('texts')
+    
+    # Log details about the files received
+    logger.info(f"Received {len(images)} image(s) and {len(texts)} text file(s)")
+    for i, img in enumerate(images):
+        logger.info(f"Image {i+1}: {img.filename} ({img.content_type})")
+    for i, txt in enumerate(texts):
+        logger.info(f"Text {i+1}: {txt.filename} ({txt.content_type})")
+    
+    if len(images) != len(texts):
+        logger.error(f"Mismatched counts: {len(images)} images vs {len(texts)} texts")
+        return jsonify({"success": False, "message": "Mismatched number of image and text files"})
+    
+    if not images or not texts:
+        logger.error("Empty file lists despite having keys in request")
+        return jsonify({"success": False, "message": "No files selected"})
+    
     try:
-        # Add detailed logging for request diagnostics
-        logger.info(f"Upload request received with Content-Type: {request.content_type}")
-        logger.info(f"Files in request: {list(request.files.keys())}")
-        logger.info(f"Form data keys: {list(request.form.keys())}")
+        # Create new folder for uploaded content
+        folder_name = create_next_folder_name()
+        folder_path = os.path.join(LOCAL_TEST_DATA, folder_name)
+        logger.info(f"Creating folder: {folder_path}")
+        os.makedirs(folder_path, exist_ok=True)
         
-        if 'images' not in request.files or 'texts' not in request.files:
-            logger.error(f"Missing required file types. Available keys: {list(request.files.keys())}")
-            return jsonify({"success": False, "message": "No files uploaded"})
-        
-        images = request.files.getlist('images')
-        texts = request.files.getlist('texts')
-        
-        # Log details about the files received
-        logger.info(f"Received {len(images)} image(s) and {len(texts)} text file(s)")
-        for i, img in enumerate(images):
-            logger.info(f"Image {i+1}: {img.filename} ({img.content_type})")
-        for i, txt in enumerate(texts):
-            logger.info(f"Text {i+1}: {txt.filename} ({txt.content_type})")
-        
-        if len(images) != len(texts):
-            logger.error(f"Mismatched counts: {len(images)} images vs {len(texts)} texts")
-            return jsonify({"success": False, "message": "Mismatched number of image and text files"})
-        
-        if not images or not texts:
-            logger.error("Empty file lists despite having keys in request")
-            return jsonify({"success": False, "message": "No files selected"})
-        
-        # Check if S3 is configured
-        if not has_s3_config:
-            logger.error("S3 is not configured, cannot upload files")
-            return jsonify({"success": False, "message": "S3 storage is not configured. Please check your environment variables."})
-        
-        # Validate files
+        # Save all files
         for i, (image_file, text_file) in enumerate(zip(images, texts)):
             if not allowed_file(image_file.filename) or not allowed_file(text_file.filename):
                 logger.error(f"Invalid file type: {image_file.filename} or {text_file.filename}")
@@ -1619,231 +972,139 @@ def upload_files():
             if image_base != text_base:
                 logger.error(f"File base names do not match: '{image_base}' vs '{text_base}'")
                 return jsonify({"success": False, "message": f"File names do not match: {image_file.filename} and {text_file.filename}"})
+            
+            # Save files
+            image_path = os.path.join(folder_path, secure_filename(image_file.filename))
+            text_path = os.path.join(folder_path, secure_filename(text_file.filename))
+            
+            logger.info(f"Saving image to: {image_path}")
+            image_file.save(image_path)
+            logger.info(f"Saving text to: {text_path}")
+            text_file.save(text_path)
+            logger.info(f"Successfully saved files: {image_file.filename}, {text_file.filename}")
         
-        # Get custom folder name or create a default one
-        folder_name = request.form.get('folder_name', '').strip()
-        if not folder_name:
-            folder_name = create_next_folder_name()
-        
-        # Validate folder name (letters, numbers, underscores, hyphens)
-        if not re.match(r'^[a-zA-Z0-9_-]+$', folder_name):
-            logger.error(f"Invalid folder name: {folder_name}")
-            return jsonify({"success": False, "message": "Invalid folder name. Use only letters, numbers, underscores, and hyphens."})
-        
-        logger.info(f"Using folder name: {folder_name}")
-        
-        # Prepare files for S3 upload
-        s3_files = []
-        for image_file, text_file in zip(images, texts):
-            # Reset file positions
-            image_file.seek(0)
-            text_file.seek(0)
-            s3_files.extend([image_file, text_file])
-        
-        # Upload files directly to S3
-        logger.info(f"Uploading {len(s3_files)} files to S3 bucket {S3_BUCKET} with prefix {folder_name}")
-        success, upload_count, error_count = upload_files_to_s3(
-            s3_files, s3_client, S3_BUCKET, s3_prefix=folder_name
-        )
-        
-        if not success:
-            logger.error(f"S3 upload failed. {error_count} errors occurred.")
-            return jsonify({"success": False, "message": f"Failed to upload files to S3. Please try again."})
-        
-        logger.info(f"Successfully uploaded {upload_count} files to S3 in folder {folder_name}")
+        # Upload to S3 if configured
+        if has_s3_config:
+            try:
+                logger.info(f"Attempting S3 upload for folder: {folder_name}")
+                upload_folder_to_s3(folder_path, s3_client, S3_BUCKET, s3_prefix=folder_name)
+                logger.info(f"Successfully uploaded folder {folder_name} to S3")
+            except Exception as s3_error:
+                logger.error(f"Error uploading to S3: {s3_error}")
+                logger.error(f"S3 upload error details: {traceback.format_exc()}")
+                # Continue anyway since local files are saved
+        else:
+            logger.info("S3 upload skipped - configuration not available")
         
         return jsonify({
             "success": True, 
-            "message": f"Successfully uploaded {len(images)} file pair(s) to S3 folder '{folder_name}'!"
+            "message": f"Successfully saved {len(images)} file pair(s) to {folder_name}!" + 
+                       (f" and uploaded to S3" if has_s3_config else "")
         })
         
     except Exception as e:
         logger.error(f"Error handling file upload: {e}")
-        logger.error(traceback.format_exc())
+        logger.error(f"Error details: {traceback.format_exc()}")
         return jsonify({"success": False, "message": f"Error: {str(e)}"})
 
 @app.route("/delete-folder", methods=["POST"])
 def delete_folder_route():
-    """Delete a folder from S3."""
+    """Delete a folder from S3 and/or local storage."""
     if not request.is_json:
         logger.error("Invalid request format for folder deletion - expected JSON")
         return jsonify({"success": False, "message": "Invalid request format"}), 400
     
     data = request.get_json()
     folder = data.get("folder")
+    delete_from = data.get("delete_from", "both")  # Options: local, s3, both
     
     if not folder:
         logger.error("No folder specified for deletion")
         return jsonify({"success": False, "message": "No folder specified"}), 400
     
-    if not has_s3_config:
-        logger.error("S3 is not configured, cannot delete folder")
-        return jsonify({"success": False, "message": "S3 storage is not configured"}), 400
+    success = True
+    messages = []
     
-    try:
-        logger.info(f"Deleting folder {folder} from S3 bucket {S3_BUCKET}")
-        success, deleted_count, error_message = delete_folder_from_s3(s3_client, S3_BUCKET, folder)
-        
-        if success:
-            logger.info(f"Successfully deleted folder {folder} with {deleted_count} objects")
-            return jsonify({
-                "success": True,
-                "message": f"Deleted folder '{folder}' from S3 with {deleted_count} objects"
-            })
+    # Delete from local storage if requested
+    if delete_from in ["local", "both"]:
+        folder_path = os.path.join(LOCAL_TEST_DATA, folder)
+        if os.path.isdir(folder_path):
+            try:
+                logger.info(f"Deleting local folder: {folder_path}")
+                shutil.rmtree(folder_path)
+                messages.append(f"Deleted local folder '{folder}'")
+            except Exception as e:
+                logger.error(f"Error deleting local folder {folder}: {e}")
+                messages.append(f"Failed to delete local folder: {str(e)}")
+                success = False
         else:
-            logger.error(f"Failed to delete folder {folder}: {error_message}")
-            return jsonify({
-                "success": False,
-                "message": f"Failed to delete folder: {error_message}"
-            })
-    except Exception as e:
-        logger.error(f"Error deleting folder {folder} from S3: {e}")
-        logger.error(traceback.format_exc())
-        return jsonify({"success": False, "message": f"Error: {str(e)}"})
-
-@app.route("/batch-delete", methods=["POST"])
-def batch_delete_route():
-    """Delete multiple folders from S3."""
-    if not request.is_json:
-        logger.error("Invalid request format for batch deletion - expected JSON")
-        return jsonify({"success": False, "message": "Invalid request format"}), 400
+            logger.warning(f"Local folder not found for deletion: {folder_path}")
+            messages.append(f"Local folder '{folder}' not found")
     
-    data = request.get_json()
-    folders = data.get("folders", [])
-    
-    if not folders:
-        logger.error("No folders specified for batch deletion")
-        return jsonify({"success": False, "message": "No folders specified"}), 400
-    
-    if not has_s3_config:
-        logger.error("S3 is not configured, cannot delete folders")
-        return jsonify({"success": False, "message": "S3 storage is not configured"}), 400
-    
-    try:
-        logger.info(f"Batch deleting {len(folders)} folders from S3 bucket {S3_BUCKET}")
-        
-        success_count = 0
-        error_count = 0
-        deleted_objects = 0
-        
-        for folder in folders:
-            success, count, error = delete_folder_from_s3(s3_client, S3_BUCKET, folder)
-            if success:
-                success_count += 1
-                deleted_objects += count
-            else:
-                error_count += 1
-                logger.error(f"Failed to delete folder {folder}: {error}")
-        
-        if error_count == 0:
-            logger.info(f"Successfully deleted {success_count} folders with {deleted_objects} objects")
-            return jsonify({
-                "success": True,
-                "message": f"Successfully deleted {success_count} folders",
-                "deleted_count": success_count,
-                "object_count": deleted_objects
-            })
-        else:
-            logger.warning(f"Partially succeeded: deleted {success_count} folders, failed to delete {error_count} folders")
-            return jsonify({
-                "success": True,
-                "message": f"Partially succeeded: deleted {success_count} folders, failed to delete {error_count} folders",
-                "deleted_count": success_count,
-                "error_count": error_count
-            })
-    except Exception as e:
-        logger.error(f"Error batch deleting folders from S3: {e}")
-        logger.error(traceback.format_exc())
-        return jsonify({"success": False, "message": f"Error: {str(e)}"})
-
-@app.route("/rename-folder", methods=["POST"])
-def rename_folder_route():
-    """Rename a folder in S3."""
-    if not request.is_json:
-        logger.error("Invalid request format for folder rename - expected JSON")
-        return jsonify({"success": False, "message": "Invalid request format"}), 400
-    
-    data = request.get_json()
-    old_name = data.get("old_name")
-    new_name = data.get("new_name")
-    
-    if not old_name or not new_name:
-        logger.error("Missing required parameters: old_name or new_name")
-        return jsonify({"success": False, "message": "Missing required parameters"}), 400
-    
-    # Validate new folder name (letters, numbers, underscores, hyphens)
-    if not re.match(r'^[a-zA-Z0-9_-]+$', new_name):
-        logger.error(f"Invalid folder name: {new_name}")
-        return jsonify({"success": False, "message": "Invalid folder name. Use only letters, numbers, underscores, and hyphens."})
-    
-    if not has_s3_config:
-        logger.error("S3 is not configured, cannot rename folder")
-        return jsonify({"success": False, "message": "S3 storage is not configured"}), 400
-    
-    try:
-        logger.info(f"Renaming folder {old_name} to {new_name} in S3 bucket {S3_BUCKET}")
-        success, renamed_count, error_message = rename_folder_in_s3(s3_client, S3_BUCKET, old_name, new_name)
-        
-        if success:
-            logger.info(f"Successfully renamed folder {old_name} to {new_name} with {renamed_count} objects")
-            return jsonify({
-                "success": True,
-                "message": f"Renamed folder '{old_name}' to '{new_name}' with {renamed_count} objects"
-            })
-        else:
-            logger.error(f"Failed to rename folder {old_name} to {new_name}: {error_message}")
-            return jsonify({
-                "success": False,
-                "message": f"Failed to rename folder: {error_message}"
-            })
-    except Exception as e:
-        logger.error(f"Error renaming folder {old_name} to {new_name}: {e}")
-        logger.error(traceback.format_exc())
-        return jsonify({"success": False, "message": f"Error: {str(e)}"})
-
-@app.route("/download-folder")
-def download_folder_route():
-    """Download a folder from S3 as a ZIP archive."""
-    folder = request.args.get("folder")
-    
-    if not folder:
-        logger.error("No folder specified for download")
-        return jsonify({"success": False, "message": "No folder specified"}), 400
-    
-    if not has_s3_config:
-        logger.error("S3 is not configured, cannot download folder")
-        return jsonify({"success": False, "message": "S3 storage is not configured"}), 400
-    
-    try:
-        logger.info(f"Creating download archive for folder {folder} from S3 bucket {S3_BUCKET}")
-        
-        # Create a temporary file to store the ZIP archive
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as temp_file:
-            temp_path = temp_file.name
-        
-        # Create the ZIP archive
-        success, result, error_message = create_download_archive(s3_client, S3_BUCKET, folder, output_path=temp_path)
-        
-        if success:
-            logger.info(f"Successfully created ZIP archive for folder {folder} at {temp_path}")
+    # Delete from S3 if configured and requested
+    if has_s3_config and delete_from in ["s3", "both"]:
+        try:
+            # List all objects with the folder prefix
+            prefix = f"{folder}/"
+            logger.info(f"Listing objects in S3 with prefix: {prefix}")
+            response = s3_client.list_objects_v2(Bucket=S3_BUCKET, Prefix=prefix)
             
-            # Send the file
-            return send_file(
-                temp_path,
-                as_attachment=True,
-                download_name=f"{folder}.zip",
-                mimetype='application/zip'
-            )
-        else:
-            logger.error(f"Failed to create download archive for folder {folder}: {error_message}")
-            return jsonify({
-                "success": False,
-                "message": f"Failed to create download archive: {error_message}"
-            })
+            if 'Contents' in response:
+                # Create delete request with all objects
+                objects = [{'Key': obj['Key']} for obj in response['Contents']]
+                
+                if objects:
+                    logger.info(f"Deleting {len(objects)} objects from S3 bucket {S3_BUCKET}")
+                    s3_client.delete_objects(
+                        Bucket=S3_BUCKET,
+                        Delete={'Objects': objects}
+                    )
+                    messages.append(f"Deleted folder '{folder}' from S3")
+                else:
+                    logger.warning(f"No objects found in S3 with prefix {prefix}")
+                    messages.append(f"No S3 objects found for folder '{folder}'")
+            else:
+                logger.warning(f"Folder not found in S3: {prefix}")
+                messages.append(f"S3 folder '{folder}' not found")
+                
+        except Exception as e:
+            logger.error(f"Error deleting folder {folder} from S3: {e}")
+            messages.append(f"Failed to delete from S3: {str(e)}")
+            success = False
+    
+    result_message = ". ".join(messages)
+    logger.info(f"Folder deletion result: {result_message}")
+    
+    return jsonify({
+        "success": success,
+        "message": result_message
+    })
+
+@app.route("/upload-to-s3", methods=["GET"])
+def upload_folder_to_s3_route():
+    """Upload a specific local folder to S3."""
+    if not has_s3_config:
+        flash("S3 is not configured. Please check your .env file.", "danger")
+        return redirect("/")
+    
+    folder = request.args.get("folder")
+    if not folder:
+        flash("No folder specified.", "danger")
+        return redirect("/")
+    
+    folder_path = os.path.join(LOCAL_TEST_DATA, folder)
+    if not os.path.isdir(folder_path):
+        flash(f"Folder {folder} does not exist.", "danger")
+        return redirect("/")
+    
+    try:
+        upload_folder_to_s3(folder_path, s3_client, S3_BUCKET, s3_prefix=folder)
+        flash(f"Folder {folder} successfully uploaded to S3!", "success")
     except Exception as e:
-        logger.error(f"Error creating download archive for folder {folder}: {e}")
-        logger.error(traceback.format_exc())
-        return jsonify({"success": False, "message": f"Error: {str(e)}"})
+        logger.error(f"Error uploading folder {folder} to S3: {e}")
+        flash(f"Error uploading to S3: {str(e)}", "danger")
+    
+    return redirect("/")
 
 if __name__ == "__main__":
     port = int(os.getenv("DASHBOARD_PORT", 5002))
