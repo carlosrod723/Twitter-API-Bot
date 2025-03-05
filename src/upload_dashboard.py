@@ -5,6 +5,7 @@ import logging
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from src.upload_to_s3 import upload_folder_to_s3
+import traceback
 import uuid
 import shutil
 import re
@@ -753,53 +754,79 @@ def dashboard():
 @app.route("/upload-files", methods=["POST"])
 def upload_files():
     """Handle file uploads via AJAX."""
+    # Add detailed logging for request diagnostics
+    logger.info(f"Upload request received with Content-Type: {request.content_type}")
+    logger.info(f"Files in request: {list(request.files.keys())}")
+    logger.info(f"Form data keys: {list(request.form.keys())}")
+    
     if 'images' not in request.files or 'texts' not in request.files:
+        logger.error(f"Missing required file types. Available keys: {list(request.files.keys())}")
         return jsonify({"success": False, "message": "No files uploaded"})
     
     images = request.files.getlist('images')
     texts = request.files.getlist('texts')
     
+    # Log details about the files received
+    logger.info(f"Received {len(images)} image(s) and {len(texts)} text file(s)")
+    for i, img in enumerate(images):
+        logger.info(f"Image {i+1}: {img.filename} ({img.content_type})")
+    for i, txt in enumerate(texts):
+        logger.info(f"Text {i+1}: {txt.filename} ({txt.content_type})")
+    
     if len(images) != len(texts):
+        logger.error(f"Mismatched counts: {len(images)} images vs {len(texts)} texts")
         return jsonify({"success": False, "message": "Mismatched number of image and text files"})
     
     if not images or not texts:
+        logger.error("Empty file lists despite having keys in request")
         return jsonify({"success": False, "message": "No files selected"})
     
     try:
         # Create new folder for uploaded content
         folder_name = create_next_folder_name()
         folder_path = os.path.join(LOCAL_TEST_DATA, folder_name)
+        logger.info(f"Creating folder: {folder_path}")
         os.makedirs(folder_path, exist_ok=True)
         
         # Save all files
         for i, (image_file, text_file) in enumerate(zip(images, texts)):
             if not allowed_file(image_file.filename) or not allowed_file(text_file.filename):
+                logger.error(f"Invalid file type: {image_file.filename} or {text_file.filename}")
                 return jsonify({"success": False, "message": "Invalid file type. Allowed: jpg, jpeg, png, txt"})
             
             # Get base names without extensions
             image_base = os.path.splitext(secure_filename(image_file.filename))[0]
             text_base = os.path.splitext(secure_filename(text_file.filename))[0]
             
+            logger.info(f"Comparing base names: '{image_base}' vs '{text_base}'")
+            
             # Verify matching base names
             if image_base != text_base:
+                logger.error(f"File base names do not match: '{image_base}' vs '{text_base}'")
                 return jsonify({"success": False, "message": f"File names do not match: {image_file.filename} and {text_file.filename}"})
             
             # Save files
             image_path = os.path.join(folder_path, secure_filename(image_file.filename))
             text_path = os.path.join(folder_path, secure_filename(text_file.filename))
             
+            logger.info(f"Saving image to: {image_path}")
             image_file.save(image_path)
+            logger.info(f"Saving text to: {text_path}")
             text_file.save(text_path)
-            logger.info(f"Saved files to {folder_path}: {image_file.filename}, {text_file.filename}")
+            logger.info(f"Successfully saved files: {image_file.filename}, {text_file.filename}")
         
         # Upload to S3 if configured
         if has_s3_config:
             try:
+                logger.info(f"Attempting S3 upload for folder: {folder_name}")
                 upload_folder_to_s3(folder_path, s3_client, S3_BUCKET, s3_prefix=folder_name)
-                logger.info(f"Uploaded folder {folder_name} to S3")
+                logger.info(f"Successfully uploaded folder {folder_name} to S3")
             except Exception as s3_error:
                 logger.error(f"Error uploading to S3: {s3_error}")
+                logger.error(f"S3 upload error details: {traceback.format_exc()}")
                 # Continue anyway since local files are saved
+        else:
+            logger.info("S3 upload skipped - configuration not available")
         
         return jsonify({
             "success": True, 
@@ -809,6 +836,7 @@ def upload_files():
         
     except Exception as e:
         logger.error(f"Error handling file upload: {e}")
+        logger.error(f"Error details: {traceback.format_exc()}")
         return jsonify({"success": False, "message": f"Error: {str(e)}"})
 
 @app.route("/upload-to-s3", methods=["GET"])

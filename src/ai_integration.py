@@ -552,30 +552,15 @@ class OpenAIIntegration:
             # Check if summary contains a Kickstarter link
             has_kickstarter_link = "kickstarter.com" in summary.lower() or "kck.st" in summary.lower()
 
-            # Create a prompt for OpenAI that generates natural-sounding tweets
+            # Create a prompt that exactly matches client requirements
             prompt = (
-                "Write a casual, engaging tweet about this artwork as if you're a real person sharing something cool. "
-                f"Image Description: {image_description}\n"
-                f"Content Info: {summary}\n\n"
-                f"Keep it under {max_length} characters and make it sound natural and conversational - like something a real person would actually tweet. "
-                "Include a call-to-action only if it feels natural.\n\n"
-                "IMPORTANT GUIDELINES:\n"
-                "- Sound like a real person, not a marketer\n"
-                "- Use casual language, contractions, and natural phrasing\n"
-                "- Focus on what's exciting about the art itself\n"
-                "- Avoid corporate or promotional-sounding language\n"
-                "- Use no more than one hashtag, and only if it flows naturally\n"
+                "This image is from my comic book. I need you to give me a description to use for a x post from "
+                f"referencing the text file provided: \n\n{summary}\n\n"
+                "Also use relevant hashtags related to a comic book. "
+                "Also add my website www.threadsofdestiny.com\n\n"
+                f"Keep it under {max_length} characters and make it conversational and engaging.\n"
+                "End the post with this tagline: Threads of Destiny – \"Unite the past, fight the future, reclaim humanity's destiny.\""
             )
-
-            # Add Kickstarter guidance based on whether a link is present
-            if has_kickstarter_link:
-                prompt += "- You can briefly mention backing the project on Kickstarter, but make it casual and authentic\n"
-            else:
-                prompt += "- Don't mention Kickstarter or crowdfunding campaigns\n"
-
-            prompt += "3. Focus on the artwork's style, content, and emotional impact rather than medium or platform.\n"
-
-            logger.debug(f"Tweet prompt: {prompt[:100]}...")
 
             # Track retry attempts
             for attempt in range(MAX_RETRIES):
@@ -587,7 +572,7 @@ class OpenAIIntegration:
                     response = self.client.chat.completions.create(
                         model=self.default_model,
                         messages=[
-                            {"role": "system", "content": "You are a creative person sharing art you're excited about. You sound like a real human, not a marketing account."},
+                            {"role": "system", "content": "You are a comic book creator posting about your work. You create compelling, conversational posts that feel authentic and engaging."},
                             {"role": "user", "content": prompt}
                         ],
                         temperature=0.8,
