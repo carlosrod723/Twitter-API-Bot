@@ -22,11 +22,27 @@ app.register_blueprint(dashboard_blueprint, url_prefix='/dashboard')
 app.register_blueprint(upload_blueprint, url_prefix='/upload')
 app.register_blueprint(log_viewer_blueprint, url_prefix='/logs')
 
-# Upload files route
 @app.route("/upload-files", methods=["POST"])
 def forward_upload():
     """Forward requests to the correct upload endpoint"""
-    return redirect(url_for('upload_dashboard.upload_files'), code=307) 
+    return redirect(url_for('upload_dashboard.upload_files'), code=307)  # 307 preserves the POST method
+
+@app.route("/delete-folder", methods=["POST"])
+def forward_delete():
+    """Forward folder deletion requests to the correct endpoint"""
+    return redirect(url_for('upload_dashboard.delete_folder_route'), code=307)
+
+# Enhanced error handling for S3 operations
+@app.errorhandler(500)
+def handle_s3_error(e):
+    """Handle internal server errors, particularly from S3 operations"""
+    if "S3" in str(e) or "boto3" in str(e) or "botocore" in str(e):
+        app.logger.error(f"S3 operation error: {str(e)}")
+        return jsonify({
+            "error": "S3 storage operation failed",
+            "message": "There was an error communicating with the cloud storage. Please try again later."
+        }), 500
+    return "Internal Server Error", 500
 
 # Bot thread
 bot_thread = None

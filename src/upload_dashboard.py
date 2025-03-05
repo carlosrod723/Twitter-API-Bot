@@ -1,16 +1,16 @@
 import os
-import json
 import boto3
-from urllib.parse import quote
 from flask import Blueprint, request, redirect, flash, render_template_string, jsonify
 import logging
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from src.upload_to_s3 import upload_folder_to_s3
-import traceback
 import uuid
 import shutil
 import re
+import traceback
+import json
+from urllib.parse import quote
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -306,26 +306,26 @@ HTML_TEMPLATE = """
           margin: 0 !important;
       }
       .dropdown-menu-end {
-         right: 0;
-         left: auto;
+        right: 0;
+        left: auto;
       }
       .delete-confirmation-modal .modal-header {
-         background-color: #dc3545;
-         color: white;
+        background-color: #dc3545;
+        color: white;
       }
       .delete-confirmation-modal .btn-danger {
-         background-color: #dc3545;
+        background-color: #dc3545;
         border-color: #dc3545;
       }
       .actions-menu .btn {
-         color: white;
-         padding: 0.25rem 0.5rem;
+        color: white;
+        padding: 0.25rem 0.5rem;
       }
       .actions-menu .btn:hover {
-         background-color: rgba(255, 255, 255, 0.2);
-         border-radius: 4px;
+        background-color: rgba(255, 255, 255, 0.2);
+        border-radius: 4px;
       }
-  </style>
+    </style>
   </head>
   <body>
     <nav class="navbar navbar-expand-lg navbar-dark" style="background-color: #37474F;">
@@ -423,7 +423,7 @@ HTML_TEMPLATE = """
                     <div class="card-header d-flex justify-content-between align-items-center">
                       <span class="truncate">{{ item.folder }}</span>
                       <div class="d-flex">
-                        <a href="/upload-to-s3?folder={{ item.folder }}" class="btn btn-sm btn-outline-s3 me-2">
+                        <a href="/upload/upload-to-s3?folder={{ item.folder }}" class="btn btn-sm btn-outline-s3 me-2">
                           <i class="fas fa-cloud-upload-alt"></i> Upload to S3
                         </a>
                         <div class="dropdown">
@@ -492,11 +492,7 @@ HTML_TEMPLATE = """
                               <i class="fas fa-ellipsis-v"></i>
                             </button>
                             <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="dropdownMenuButton{{loop.index}}">
-                              <li>
-                                <a class="dropdown-item text-danger delete-folder" href="#" data-folder="{{ item.folder }}" data-location="s3">
-                                  <i class="fas fa-trash-alt me-2"></i>Delete
-                                </a>
-                              </li>
+                              <li><a class="dropdown-item text-danger delete-folder" href="#" data-folder="{{ item.folder }}" data-location="s3"><i class="fas fa-trash-alt me-2"></i>Delete</a></li>
                             </ul>
                           </div>
                         </div>
@@ -554,6 +550,29 @@ HTML_TEMPLATE = """
         </div>
       </div>
     </footer>
+    
+    <!-- Delete Confirmation Modal -->
+    <div class="modal fade delete-confirmation-modal" id="deleteConfirmationModal" tabindex="-1" aria-labelledby="deleteConfirmationModalLabel" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="deleteConfirmationModalLabel">
+              <i class="fas fa-exclamation-triangle me-2"></i>
+              Confirm Deletion
+            </h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <p>Are you sure you want to delete the folder <strong id="folderNameToDelete"></strong>?</p>
+            <p class="text-danger"><i class="fas fa-exclamation-circle me-2"></i>This action cannot be undone!</p>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-danger" id="confirmDeleteBtn">Delete</button>
+          </div>
+        </div>
+      </div>
+    </div>
     
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
@@ -767,19 +786,19 @@ HTML_TEMPLATE = """
         })
         .catch(error => {
           console.error('Error:', error);
-
+          
           // Show error
           const alertDiv = document.createElement('div');
           alertDiv.className = 'alert alert-danger';
           alertDiv.innerHTML = '<i class="fas fa-exclamation-circle me-2"></i>An error occurred during upload. Please try again.';
           previewContainer.appendChild(alertDiv);
-
+          
           // Reset button
           uploadButton.innerHTML = '<i class="fas fa-redo me-2"></i>Try Again';
           uploadButton.disabled = false;
         });
       }
-
+      
       // Delete folder functionality
       document.addEventListener('DOMContentLoaded', function() {
         // Get all delete buttons
@@ -787,35 +806,35 @@ HTML_TEMPLATE = """
         const deleteModal = new bootstrap.Modal(document.getElementById('deleteConfirmationModal'));
         const folderNameElement = document.getElementById('folderNameToDelete');
         const confirmDeleteBtn = document.getElementById('confirmDeleteBtn');
-
+        
         let folderToDelete = '';
         let locationToDeleteFrom = 'both'; // Default to both local and S3
-
+        
         // Add click handlers to all delete buttons
         deleteButtons.forEach(button => {
           button.addEventListener('click', function(e) {
             e.preventDefault();
-
+            
             // Get folder name and location from data attributes
             folderToDelete = this.getAttribute('data-folder');
             locationToDeleteFrom = this.getAttribute('data-location');
-
+            
             // Update the modal text
             folderNameElement.textContent = folderToDelete;
-
+            
             // Show the confirmation modal
             deleteModal.show();
           });
         });
-
+        
         // Handle confirmation button click
         confirmDeleteBtn.addEventListener('click', function() {
           // Disable the button and show loading state
           confirmDeleteBtn.disabled = true;
           confirmDeleteBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Deleting...';
-
+          
           // Send delete request to server
-          fetch('/delete-folder', {
+          fetch('/upload/delete-folder', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -829,11 +848,11 @@ HTML_TEMPLATE = """
           .then(data => {
             // Hide the modal
             deleteModal.hide();
-
+            
             // Show result message
             const alertType = data.success ? 'success' : 'danger';
             const alertIcon = data.success ? 'check-circle' : 'exclamation-circle';
-
+            
             const alertDiv = document.createElement('div');
             alertDiv.className = `alert alert-${alertType} alert-dismissible fade show`;
             alertDiv.innerHTML = `
@@ -841,11 +860,11 @@ HTML_TEMPLATE = """
               ${data.message}
               <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
             `;
-
+            
             // Insert the alert at the top of the page
             const container = document.querySelector('.container');
             container.insertBefore(alertDiv, container.firstChild);
-
+            
             // Refresh the page after a brief delay
             setTimeout(() => {
               window.location.reload();
@@ -853,7 +872,7 @@ HTML_TEMPLATE = """
           })
           .catch(error => {
             console.error('Error deleting folder:', error);
-
+            
             // Show error message
             const alertDiv = document.createElement('div');
             alertDiv.className = 'alert alert-danger alert-dismissible fade show';
@@ -862,49 +881,27 @@ HTML_TEMPLATE = """
               An error occurred while deleting the folder. Please try again.
               <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
             `;
-
+            
             // Insert the alert
             const container = document.querySelector('.container');
             container.insertBefore(alertDiv, container.firstChild);
-
+            
             // Hide the modal
             deleteModal.hide();
-
+            
             // Reset the button
             confirmDeleteBtn.disabled = false;
             confirmDeleteBtn.innerHTML = 'Delete';
           });
         });
-
+        
         // Reset the confirm button when the modal is hidden
-        document.getElementById('deleteConfirmationModal').addEventListener('hidden.bs.modal', function() {
+        document.getElementById('deleteConfirmationModal').addEventListener('hidden.bs.modal', function () {
           confirmDeleteBtn.disabled = false;
           confirmDeleteBtn.innerHTML = 'Delete';
         });
       });
     </script>
-    <!-- Delete Confirmation Modal -->
-    <div class="modal fade delete-confirmation-modal" id="deleteConfirmationModal" tabindex="-1" aria-labelledby="deleteConfirmationModalLabel" aria-hidden="true">
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title" id="deleteConfirmationModalLabel">
-              <i class="fas fa-exclamation-triangle me-2"></i>
-              Confirm Deletion
-            </h5>
-            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
-          </div>
-          <div class="modal-body">
-            <p>Are you sure you want to delete the folder <strong id="folderNameToDelete"></strong>?</p>
-            <p class="text-danger"><i class="fas fa-exclamation-circle me-2"></i>This action cannot be undone!</p>
-          </div>
-          <div class="modal-footer">
-            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-            <button type="button" class="btn btn-danger" id="confirmDeleteBtn">Delete</button>
-          </div>
-        </div>
-      </div>
-    </div>
   </body>
 </html>
 """
@@ -1010,32 +1007,6 @@ def upload_files():
         logger.error(f"Error details: {traceback.format_exc()}")
         return jsonify({"success": False, "message": f"Error: {str(e)}"})
 
-@app.route("/upload-to-s3", methods=["GET"])
-def upload_folder_to_s3_route():
-    """Upload a specific local folder to S3."""
-    if not has_s3_config:
-        flash("S3 is not configured. Please check your .env file.", "danger")
-        return redirect("/")
-    
-    folder = request.args.get("folder")
-    if not folder:
-        flash("No folder specified.", "danger")
-        return redirect("/")
-    
-    folder_path = os.path.join(LOCAL_TEST_DATA, folder)
-    if not os.path.isdir(folder_path):
-        flash(f"Folder {folder} does not exist.", "danger")
-        return redirect("/")
-    
-    try:
-        upload_folder_to_s3(folder_path, s3_client, S3_BUCKET, s3_prefix=folder)
-        flash(f"Folder {folder} successfully uploaded to S3!", "success")
-    except Exception as e:
-        logger.error(f"Error uploading folder {folder} to S3: {e}")
-        flash(f"Error uploading to S3: {str(e)}", "danger")
-    
-    return redirect("/")
-
 @app.route("/delete-folder", methods=["POST"])
 def delete_folder_route():
     """Delete a folder from S3 and/or local storage."""
@@ -1108,6 +1079,32 @@ def delete_folder_route():
         "success": success,
         "message": result_message
     })
+
+@app.route("/upload-to-s3", methods=["GET"])
+def upload_folder_to_s3_route():
+    """Upload a specific local folder to S3."""
+    if not has_s3_config:
+        flash("S3 is not configured. Please check your .env file.", "danger")
+        return redirect("/")
+    
+    folder = request.args.get("folder")
+    if not folder:
+        flash("No folder specified.", "danger")
+        return redirect("/")
+    
+    folder_path = os.path.join(LOCAL_TEST_DATA, folder)
+    if not os.path.isdir(folder_path):
+        flash(f"Folder {folder} does not exist.", "danger")
+        return redirect("/")
+    
+    try:
+        upload_folder_to_s3(folder_path, s3_client, S3_BUCKET, s3_prefix=folder)
+        flash(f"Folder {folder} successfully uploaded to S3!", "success")
+    except Exception as e:
+        logger.error(f"Error uploading folder {folder} to S3: {e}")
+        flash(f"Error uploading to S3: {str(e)}", "danger")
+    
+    return redirect("/")
 
 if __name__ == "__main__":
     port = int(os.getenv("DASHBOARD_PORT", 5002))
