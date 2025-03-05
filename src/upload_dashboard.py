@@ -1,5 +1,7 @@
 import os
+import json
 import boto3
+from urllib.parse import quote
 from flask import Blueprint, request, redirect, flash, render_template_string, jsonify
 import logging
 from werkzeug.utils import secure_filename
@@ -303,7 +305,27 @@ HTML_TEMPLATE = """
           flex-shrink: 0;
           margin: 0 !important;
       }
-    </style>
+      .dropdown-menu-end {
+         right: 0;
+         left: auto;
+      }
+      .delete-confirmation-modal .modal-header {
+         background-color: #dc3545;
+         color: white;
+      }
+      .delete-confirmation-modal .btn-danger {
+         background-color: #dc3545;
+        border-color: #dc3545;
+      }
+      .actions-menu .btn {
+         color: white;
+         padding: 0.25rem 0.5rem;
+      }
+      .actions-menu .btn:hover {
+         background-color: rgba(255, 255, 255, 0.2);
+         border-radius: 4px;
+      }
+  </style>
   </head>
   <body>
     <nav class="navbar navbar-expand-lg navbar-dark" style="background-color: #37474F;">
@@ -400,9 +422,19 @@ HTML_TEMPLATE = """
                   <div class="card content-card">
                     <div class="card-header d-flex justify-content-between align-items-center">
                       <span class="truncate">{{ item.folder }}</span>
-                      <a href="/upload-to-s3?folder={{ item.folder }}" class="btn btn-sm btn-outline-s3">
-                        <i class="fas fa-cloud-upload-alt"></i> Upload to S3
-                      </a>
+                      <div class="d-flex">
+                        <a href="/upload-to-s3?folder={{ item.folder }}" class="btn btn-sm btn-outline-s3 me-2">
+                          <i class="fas fa-cloud-upload-alt"></i> Upload to S3
+                        </a>
+                        <div class="dropdown">
+                          <button class="btn btn-sm" type="button" id="localDropdownMenu{{loop.index}}" data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="fas fa-ellipsis-v"></i>
+                          </button>
+                          <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="localDropdownMenu{{loop.index}}">
+                            <li><a class="dropdown-item text-danger delete-folder" href="#" data-folder="{{ item.folder }}" data-location="local"><i class="fas fa-trash-alt me-2"></i>Delete</a></li>
+                          </ul>
+                        </div>
+                      </div>
                     </div>
                     <div class="card-body">
                       {% if item.image_files %}
@@ -452,8 +484,22 @@ HTML_TEMPLATE = """
                 {% for item in s3_content %}
                   <div class="col-md-4">
                     <div class="card content-card">
-                      <div class="card-header">
+                      <div class="card-header d-flex justify-content-between align-items-center">
                         <span class="truncate">{{ item.folder }}</span>
+                        <div class="actions-menu">
+                          <div class="dropdown">
+                            <button class="btn btn-sm" type="button" id="dropdownMenuButton{{loop.index}}" data-bs-toggle="dropdown" aria-expanded="false">
+                              <i class="fas fa-ellipsis-v"></i>
+                            </button>
+                            <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="dropdownMenuButton{{loop.index}}">
+                              <li>
+                                <a class="dropdown-item text-danger delete-folder" href="#" data-folder="{{ item.folder }}" data-location="s3">
+                                  <i class="fas fa-trash-alt me-2"></i>Delete
+                                </a>
+                              </li>
+                            </ul>
+                          </div>
+                        </div>
                       </div>
                       <div class="card-body">
                         {% if item.image_files %}
@@ -721,19 +767,144 @@ HTML_TEMPLATE = """
         })
         .catch(error => {
           console.error('Error:', error);
-          
+
           // Show error
           const alertDiv = document.createElement('div');
           alertDiv.className = 'alert alert-danger';
           alertDiv.innerHTML = '<i class="fas fa-exclamation-circle me-2"></i>An error occurred during upload. Please try again.';
           previewContainer.appendChild(alertDiv);
-          
+
           // Reset button
           uploadButton.innerHTML = '<i class="fas fa-redo me-2"></i>Try Again';
           uploadButton.disabled = false;
         });
       }
+
+      // Delete folder functionality
+      document.addEventListener('DOMContentLoaded', function() {
+        // Get all delete buttons
+        const deleteButtons = document.querySelectorAll('.delete-folder');
+        const deleteModal = new bootstrap.Modal(document.getElementById('deleteConfirmationModal'));
+        const folderNameElement = document.getElementById('folderNameToDelete');
+        const confirmDeleteBtn = document.getElementById('confirmDeleteBtn');
+
+        let folderToDelete = '';
+        let locationToDeleteFrom = 'both'; // Default to both local and S3
+
+        // Add click handlers to all delete buttons
+        deleteButtons.forEach(button => {
+          button.addEventListener('click', function(e) {
+            e.preventDefault();
+
+            // Get folder name and location from data attributes
+            folderToDelete = this.getAttribute('data-folder');
+            locationToDeleteFrom = this.getAttribute('data-location');
+
+            // Update the modal text
+            folderNameElement.textContent = folderToDelete;
+
+            // Show the confirmation modal
+            deleteModal.show();
+          });
+        });
+
+        // Handle confirmation button click
+        confirmDeleteBtn.addEventListener('click', function() {
+          // Disable the button and show loading state
+          confirmDeleteBtn.disabled = true;
+          confirmDeleteBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Deleting...';
+
+          // Send delete request to server
+          fetch('/delete-folder', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              folder: folderToDelete,
+              delete_from: locationToDeleteFrom
+            })
+          })
+          .then(response => response.json())
+          .then(data => {
+            // Hide the modal
+            deleteModal.hide();
+
+            // Show result message
+            const alertType = data.success ? 'success' : 'danger';
+            const alertIcon = data.success ? 'check-circle' : 'exclamation-circle';
+
+            const alertDiv = document.createElement('div');
+            alertDiv.className = `alert alert-${alertType} alert-dismissible fade show`;
+            alertDiv.innerHTML = `
+              <i class="fas fa-${alertIcon} me-2"></i>
+              ${data.message}
+              <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            `;
+
+            // Insert the alert at the top of the page
+            const container = document.querySelector('.container');
+            container.insertBefore(alertDiv, container.firstChild);
+
+            // Refresh the page after a brief delay
+            setTimeout(() => {
+              window.location.reload();
+            }, 1500);
+          })
+          .catch(error => {
+            console.error('Error deleting folder:', error);
+
+            // Show error message
+            const alertDiv = document.createElement('div');
+            alertDiv.className = 'alert alert-danger alert-dismissible fade show';
+            alertDiv.innerHTML = `
+              <i class="fas fa-exclamation-circle me-2"></i>
+              An error occurred while deleting the folder. Please try again.
+              <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            `;
+
+            // Insert the alert
+            const container = document.querySelector('.container');
+            container.insertBefore(alertDiv, container.firstChild);
+
+            // Hide the modal
+            deleteModal.hide();
+
+            // Reset the button
+            confirmDeleteBtn.disabled = false;
+            confirmDeleteBtn.innerHTML = 'Delete';
+          });
+        });
+
+        // Reset the confirm button when the modal is hidden
+        document.getElementById('deleteConfirmationModal').addEventListener('hidden.bs.modal', function() {
+          confirmDeleteBtn.disabled = false;
+          confirmDeleteBtn.innerHTML = 'Delete';
+        });
+      });
     </script>
+    <!-- Delete Confirmation Modal -->
+    <div class="modal fade delete-confirmation-modal" id="deleteConfirmationModal" tabindex="-1" aria-labelledby="deleteConfirmationModalLabel" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="deleteConfirmationModalLabel">
+              <i class="fas fa-exclamation-triangle me-2"></i>
+              Confirm Deletion
+            </h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <p>Are you sure you want to delete the folder <strong id="folderNameToDelete"></strong>?</p>
+            <p class="text-danger"><i class="fas fa-exclamation-circle me-2"></i>This action cannot be undone!</p>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-danger" id="confirmDeleteBtn">Delete</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </body>
 </html>
 """
@@ -864,6 +1035,79 @@ def upload_folder_to_s3_route():
         flash(f"Error uploading to S3: {str(e)}", "danger")
     
     return redirect("/")
+
+@app.route("/delete-folder", methods=["POST"])
+def delete_folder_route():
+    """Delete a folder from S3 and/or local storage."""
+    if not request.is_json:
+        logger.error("Invalid request format for folder deletion - expected JSON")
+        return jsonify({"success": False, "message": "Invalid request format"}), 400
+    
+    data = request.get_json()
+    folder = data.get("folder")
+    delete_from = data.get("delete_from", "both")  # Options: local, s3, both
+    
+    if not folder:
+        logger.error("No folder specified for deletion")
+        return jsonify({"success": False, "message": "No folder specified"}), 400
+    
+    success = True
+    messages = []
+    
+    # Delete from local storage if requested
+    if delete_from in ["local", "both"]:
+        folder_path = os.path.join(LOCAL_TEST_DATA, folder)
+        if os.path.isdir(folder_path):
+            try:
+                logger.info(f"Deleting local folder: {folder_path}")
+                shutil.rmtree(folder_path)
+                messages.append(f"Deleted local folder '{folder}'")
+            except Exception as e:
+                logger.error(f"Error deleting local folder {folder}: {e}")
+                messages.append(f"Failed to delete local folder: {str(e)}")
+                success = False
+        else:
+            logger.warning(f"Local folder not found for deletion: {folder_path}")
+            messages.append(f"Local folder '{folder}' not found")
+    
+    # Delete from S3 if configured and requested
+    if has_s3_config and delete_from in ["s3", "both"]:
+        try:
+            # List all objects with the folder prefix
+            prefix = f"{folder}/"
+            logger.info(f"Listing objects in S3 with prefix: {prefix}")
+            response = s3_client.list_objects_v2(Bucket=S3_BUCKET, Prefix=prefix)
+            
+            if 'Contents' in response:
+                # Create delete request with all objects
+                objects = [{'Key': obj['Key']} for obj in response['Contents']]
+                
+                if objects:
+                    logger.info(f"Deleting {len(objects)} objects from S3 bucket {S3_BUCKET}")
+                    s3_client.delete_objects(
+                        Bucket=S3_BUCKET,
+                        Delete={'Objects': objects}
+                    )
+                    messages.append(f"Deleted folder '{folder}' from S3")
+                else:
+                    logger.warning(f"No objects found in S3 with prefix {prefix}")
+                    messages.append(f"No S3 objects found for folder '{folder}'")
+            else:
+                logger.warning(f"Folder not found in S3: {prefix}")
+                messages.append(f"S3 folder '{folder}' not found")
+                
+        except Exception as e:
+            logger.error(f"Error deleting folder {folder} from S3: {e}")
+            messages.append(f"Failed to delete from S3: {str(e)}")
+            success = False
+    
+    result_message = ". ".join(messages)
+    logger.info(f"Folder deletion result: {result_message}")
+    
+    return jsonify({
+        "success": success,
+        "message": result_message
+    })
 
 if __name__ == "__main__":
     port = int(os.getenv("DASHBOARD_PORT", 5002))
